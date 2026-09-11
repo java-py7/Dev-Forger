@@ -16,70 +16,109 @@ export default async function DiscoverPage() {
     redirect("/login");
   }
 
-  const developers = await prisma.user.findMany({
-    where: {
-      id: {
-        not: session.user.id,
+  const userId = session.user.id;
+
+  const [
+    developers,
+    roles,
+    lookingFor,
+    interests,
+    skills,
+  ] = await Promise.all([
+    prisma.user.findMany({
+      where: {
+        id: {
+          not: userId,
+        },
+        profile: {
+          is: {
+            visibility: "PUBLIC",
+          },
+        },
       },
-      profile: {
-        isNot: null,
-      },
-    },
 
       include: {
         profile: {
-        include: {
-          roles: {
-            include: {
-              role: true,
+          include: {
+            roles: {
+              include: {
+                role: true,
+              },
+            },
+
+            lookingFor: {
+              include: {
+                lookingFor: true,
+              },
+            },
+
+            interests: {
+              include: {
+                interest: true,
+              },
             },
           },
-          lookingFor: {
-            include: {
-              lookingFor: true,
-            },
+        },
+
+        // Get ALL skills because the profile modal
+        // needs complete skill + experience information.
+        userSkills: {
+          include: {
+            skill: true,
           },
-          interests: {
-            include: {
-              interest: true,
-            },
+
+          orderBy: {
+            level: "desc",
           },
         },
       },
 
-      userSkills: {
-        include: {
-          skill: true,
-        },
-
-        orderBy: {
-          level: "desc",
-        },
-
-        take: 5,
+      orderBy: {
+        createdAt: "desc",
       },
-    },
+    }),
 
-    orderBy: {
-      createdAt: "desc",
-    },
-  });
+    // ALL filter options come directly from the database.
+    prisma.developerRole.findMany({
+      orderBy: {
+        name: "asc",
+      },
+    }),
 
-  const developersWithProfiles = developers.filter(
-    (
-      developer
-    ): developer is typeof developer & {
-      profile: NonNullable<typeof developer.profile>;
-    } => developer.profile !== null
-  );
+    prisma.lookingFor.findMany({
+      orderBy: {
+        name: "asc",
+      },
+    }),
+
+    prisma.interest.findMany({
+      orderBy: {
+        name: "asc",
+      },
+    }),
+
+    prisma.skill.findMany({
+      orderBy: {
+        name: "asc",
+      },
+    }),
+  ]);
+
+ const developersWithProfiles = developers.filter(
+  (
+    developer
+  ): developer is typeof developer & {
+    profile: NonNullable<typeof developer.profile>;
+  } => developer.profile !== null
+);
 
   return (
     <main className="min-h-full">
-
+    
       {/* Content */}
-      <div className="px-3 py-3 lg:px-4">
-        <div className="mx-auto max-w-1xl">
-          <div className="mb-6 flex items-end justify-between gap-4">
+      <div className="px-6 py-6 lg:px-8">
+        <div className="mx-auto max-w-8xl">
+          <div className="mb-5 flex items-center justify-between gap-4">
             <div>
               <h2 className="text-lg font-semibold">
                 Developers
@@ -98,7 +137,7 @@ export default async function DiscoverPage() {
 
           {developersWithProfiles.length === 0 ? (
             <Card>
-              <CardContent className="flex min-h-72 flex-col items-center justify-center text-center">
+              <CardContent className="flex min-h-64 flex-col items-center justify-center text-center">
                 <div className="flex size-12 items-center justify-center rounded-xl border bg-muted/40">
                   <Users className="size-5 text-muted-foreground" />
                 </div>
@@ -116,6 +155,10 @@ export default async function DiscoverPage() {
           ) : (
             <DeveloperDiscover
               developers={developersWithProfiles}
+              roles={roles}
+              lookingFor={lookingFor}
+              interests={interests}
+              skills={skills}
             />
           )}
         </div>
