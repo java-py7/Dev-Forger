@@ -290,10 +290,11 @@ export function ProjectCard({ project, availableUsers, availableSkills = [] }: P
 
             <Link
               href={`/projects/${project.slug}`}
-              className="inline-flex size-8 items-center justify-center rounded-md border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-              title="View project details"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium text-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+              title="Open DevForge Cloud IDE"
             >
-              <ChevronRight className="size-4" />
+              <Code2 className="size-3.5 text-primary" />
+              <span>Open IDE</span>
             </Link>
           </div>
         </div>

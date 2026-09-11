@@ -16,7 +16,6 @@ import {
   MessageSquare,
   Rocket,
   Settings,
-  Terminal,
   UserRound,
   Users,
 } from "lucide-react";
@@ -79,7 +78,6 @@ const mainNavigation = [
 
 const workspaceNavigation = [
   { title: "Code", href: "/workspace", icon: Code2 },
-  { title: "Terminal", href: "/terminal", icon: Terminal },
   { title: "Live Preview", href: "/preview", icon: Eye },
   { title: "Deployments", href: "/deployments", icon: Rocket },
 ];
