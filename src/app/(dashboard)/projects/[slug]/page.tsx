@@ -160,17 +160,12 @@ Edit \`${mainFileName}\` and click **Run** to execute your code in the DevForge 
     workspace.files = [mainFile, readmeFile];
   }
 
-  // Map files to client WorkspaceFileItem
-  const initialFiles: WorkspaceFileItem[] = workspace.files.map((file) => ({
-    id: file.id,
-    name: file.name,
-    path: file.path,
-    type: file.type as "FILE" | "FOLDER",
-    parentId: file.parentId,
-    content: file.content,
-    language: file.language,
-    size: file.size,
-  }));
+  // Ensure workspace files are synchronized on physical disk and load disk file tree
+  const { ensureWorkspaceDiskSync, scanWorkspaceDisk } = await import(
+    "@/server/workspace-manager"
+  );
+  await ensureWorkspaceDiskSync(project.id);
+  const initialFiles: WorkspaceFileItem[] = await scanWorkspaceDisk(project.id);
 
   return (
     <IdeLayout

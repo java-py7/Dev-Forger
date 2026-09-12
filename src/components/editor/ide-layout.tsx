@@ -37,6 +37,7 @@ import { WorkspaceFileItem, OpenTab, detectLanguage } from "./types";
 import {
   saveFileContent,
   updateEditorSession,
+  syncWorkspaceFilesAction,
 } from "@/app/(dashboard)/projects/[slug]/workspace-actions";
 
 interface IdeLayoutProps {
@@ -158,10 +159,32 @@ export function IdeLayout({
     }
   }, [activeFileId, workspace.id]);
 
+  // Live filesystem synchronization when files change from disk/terminal
+  const handleFsChange = useCallback(async () => {
+    try {
+      const res = await syncWorkspaceFilesAction(project.id);
+      if (res.success && res.files) {
+        setFiles(res.files);
+        setFileBuffers((prev) => {
+          const next = { ...prev };
+          res.files.forEach((f) => {
+            if (f.type === "FILE" && f.content !== null && next[f.id] === undefined) {
+              next[f.id] = f.content || "";
+            }
+          });
+          return next;
+        });
+      }
+    } catch (e) {
+      console.warn("Failed to sync workspace files:", e);
+    }
+  }, [project.id]);
+
   // Update tabs when files change from server
   const handleFilesRefreshed = useCallback(() => {
+    handleFsChange();
     router.refresh();
-  }, [router]);
+  }, [handleFsChange, router]);
 
   // Select file from explorer
   const handleSelectFile = useCallback((file: WorkspaceFileItem) => {
@@ -680,6 +703,9 @@ export function IdeLayout({
               logs={logs}
               onClearLogs={() => setLogs([])}
               isRunning={isRunning}
+              projectId={project.id}
+              projectSlug={project.slug}
+              onFilesChanged={handleFsChange}
             />
           </div>
         </div>

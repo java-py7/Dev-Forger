@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Folder,
   FolderOpen,
@@ -15,6 +15,7 @@ import {
   Pencil,
   Trash2,
   FolderTree,
+  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -111,6 +112,21 @@ export function FileExplorer({
     // Expand all folders by default
     return new Set(files.filter((f) => f.type === "FOLDER").map((f) => f.id));
   });
+
+  // Automatically expand newly added folders (e.g. from terminal mkdir)
+  useEffect(() => {
+    setExpandedFolders((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      files.forEach((f) => {
+        if (f.type === "FOLDER" && !next.has(f.id)) {
+          next.add(f.id);
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [files]);
 
   // Selected folder for creating files inside
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
@@ -426,6 +442,17 @@ export function FileExplorer({
               }}
             >
               <FolderPlus className="size-3.5" />
+            </Button>
+
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-6 text-muted-foreground hover:text-foreground cursor-pointer"
+              title="Refresh Files"
+              onClick={() => onFilesChanged?.()}
+            >
+              <RefreshCw className="size-3.5" />
             </Button>
           </div>
         )}

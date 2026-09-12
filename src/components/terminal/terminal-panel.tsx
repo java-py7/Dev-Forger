@@ -9,13 +9,15 @@ import {
   ChevronUp,
   AlertCircle,
   CheckCircle2,
-  Clock,
   Sparkles,
   Maximize2,
   Minimize2,
+  RefreshCw,
+  Circle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { XTermTerminal, XTermTerminalHandle } from "./xterm-terminal";
 
 export interface LogEntry {
   type: "info" | "warn" | "error" | "success";
@@ -29,6 +31,10 @@ interface TerminalPanelProps {
   logs: LogEntry[];
   onClearLogs: () => void;
   isRunning?: boolean;
+  cwd?: string;
+  projectId?: string;
+  projectSlug?: string;
+  onFilesChanged?: () => void;
 }
 
 export function TerminalPanel({
@@ -37,64 +43,25 @@ export function TerminalPanel({
   logs,
   onClearLogs,
   isRunning = false,
+  cwd,
+  projectId,
+  projectSlug,
+  onFilesChanged,
 }: TerminalPanelProps) {
-  const [activeTab, setActiveTab] = useState<"output" | "terminal" | "problems">("output");
-  const [cliInput, setCliInput] = useState("");
-  const [cliHistory, setCliHistory] = useState<string[]>([
-    "DevForge Cloud Terminal v1.0.0",
-    "Type 'help' for a list of available commands.",
-  ]);
+  const [activeTab, setActiveTab] = useState<"output" | "terminal" | "problems">("terminal");
   const [isExpandedFull, setIsExpandedFull] = useState(false);
+  const [terminalStatus, setTerminalStatus] = useState<
+    "connecting" | "connected" | "disconnected" | "error"
+  >("connecting");
+
   const logEndRef = useRef<HTMLDivElement>(null);
-  const cliEndRef = useRef<HTMLDivElement>(null);
+  const xtermRef = useRef<XTermTerminalHandle>(null);
 
   useEffect(() => {
     if (isOpen && activeTab === "output") {
       logEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [logs, isOpen, activeTab]);
-
-  const handleCliSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cmd = cliInput.trim();
-    if (!cmd) return;
-
-    const newHistory = [...cliHistory, `$ ${cmd}`];
-
-    switch (cmd.toLowerCase()) {
-      case "help":
-        newHistory.push(
-          "Available commands:",
-          "  help     - Show list of commands",
-          "  clear    - Clear the terminal screen",
-          "  node -v  - Display simulated Node.js environment version",
-          "  status   - Check project workspace sync status",
-          "  date     - Show current server/client time"
-        );
-        break;
-      case "clear":
-        setCliHistory([]);
-        setCliInput("");
-        return;
-      case "node -v":
-        newHistory.push("v20.12.0 (DevForge Sandboxed Engine)");
-        break;
-      case "status":
-        newHistory.push("Workspace Status: Connected (PostgreSQL Realtime Sync Active)");
-        break;
-      case "date":
-        newHistory.push(new Date().toString());
-        break;
-      default:
-        newHistory.push(`Command not recognized: '${cmd}'. Type 'help' for available commands.`);
-    }
-
-    setCliHistory(newHistory);
-    setCliInput("");
-    setTimeout(() => {
-      cliEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, 50);
-  };
 
   if (!isOpen) {
     return (
@@ -127,13 +94,38 @@ export function TerminalPanel({
   return (
     <div
       className={cn(
-        "flex w-full flex-col border-t bg-background/95 backdrop-blur transition-all duration-150 select-none",
-        isExpandedFull ? "h-80" : "h-48"
+        "flex w-full flex-col border-t bg-[#080b11] transition-all duration-150 select-none",
+        isExpandedFull ? "h-96" : "h-56"
       )}
     >
-      {/* Terminal Top Tabs */}
-      <div className="flex h-8 items-center justify-between border-b bg-muted/40 px-3 text-xs">
+      {/* Terminal Top Tabs Bar */}
+      <div className="flex h-8 items-center justify-between border-b border-border/40 bg-muted/30 px-3 text-xs">
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setActiveTab("terminal")}
+            className={cn(
+              "flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-medium transition-colors cursor-pointer",
+              activeTab === "terminal"
+                ? "bg-background text-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <TerminalIcon className="size-3" />
+            <span>Terminal</span>
+            {/* Status indicator dot */}
+            <Circle
+              className={cn(
+                "size-2 fill-current transition-colors ml-0.5",
+                terminalStatus === "connected"
+                  ? "text-emerald-500 fill-emerald-500"
+                  : terminalStatus === "connecting"
+                  ? "text-amber-500 fill-amber-500 animate-pulse"
+                  : "text-rose-500 fill-rose-500"
+              )}
+            />
+          </button>
+
           <button
             type="button"
             onClick={() => setActiveTab("output")}
@@ -155,20 +147,6 @@ export function TerminalPanel({
 
           <button
             type="button"
-            onClick={() => setActiveTab("terminal")}
-            className={cn(
-              "flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-medium transition-colors cursor-pointer",
-              activeTab === "terminal"
-                ? "bg-background text-foreground shadow-xs"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            <TerminalIcon className="size-3" />
-            <span>Terminal</span>
-          </button>
-
-          <button
-            type="button"
             onClick={() => setActiveTab("problems")}
             className={cn(
               "flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-medium transition-colors cursor-pointer",
@@ -184,12 +162,38 @@ export function TerminalPanel({
 
         {/* Action icons right */}
         <div className="flex items-center gap-1">
+          {activeTab === "terminal" && (
+            <>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-6 text-muted-foreground hover:text-foreground cursor-pointer"
+                title="Clear Terminal Screen"
+                onClick={() => xtermRef.current?.clear()}
+              >
+                <Trash2 className="size-3" />
+              </Button>
+
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-6 text-muted-foreground hover:text-foreground cursor-pointer"
+                title="Restart Shell Session"
+                onClick={() => xtermRef.current?.reconnect()}
+              >
+                <RefreshCw className="size-3" />
+              </Button>
+            </>
+          )}
+
           {activeTab === "output" && (
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              className="size-6 text-muted-foreground hover:text-foreground"
+              className="size-6 text-muted-foreground hover:text-foreground cursor-pointer"
               title="Clear Output"
               onClick={onClearLogs}
             >
@@ -201,7 +205,7 @@ export function TerminalPanel({
             type="button"
             variant="ghost"
             size="icon"
-            className="size-6 text-muted-foreground hover:text-foreground"
+            className="size-6 text-muted-foreground hover:text-foreground cursor-pointer"
             title={isExpandedFull ? "Minimize" : "Maximize"}
             onClick={() => setIsExpandedFull(!isExpandedFull)}
           >
@@ -216,7 +220,7 @@ export function TerminalPanel({
             type="button"
             variant="ghost"
             size="icon"
-            className="size-6 text-muted-foreground hover:text-foreground"
+            className="size-6 text-muted-foreground hover:text-foreground cursor-pointer"
             title="Collapse Terminal"
             onClick={onToggle}
           >
@@ -226,63 +230,61 @@ export function TerminalPanel({
       </div>
 
       {/* Content Area */}
-      <div className="flex-1 overflow-y-auto p-3 font-mono text-xs select-text">
+      <div className="flex-1 overflow-hidden relative">
+        {/* Real xterm.js terminal - preserved in DOM to maintain shell state */}
+        <div
+          className={cn(
+            "h-full w-full",
+            activeTab === "terminal" ? "block" : "hidden"
+          )}
+        >
+          <XTermTerminal
+            ref={xtermRef}
+            isVisible={isOpen && activeTab === "terminal"}
+            projectId={projectId}
+            projectSlug={projectSlug}
+            cwd={cwd}
+            onStatusChange={setTerminalStatus}
+            onFilesChanged={onFilesChanged}
+          />
+        </div>
+
+        {/* Output tab */}
         {activeTab === "output" && (
-          <div className="space-y-1">
-            {logs.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-6 text-muted-foreground/60 select-none">
-                <Sparkles className="size-5 mb-1 text-muted-foreground/40" />
-                <p>No output yet. Click &quot;Run&quot; above to execute current file.</p>
-              </div>
-            ) : (
-              logs.map((log, index) => {
-                let color = "text-foreground";
-                if (log.type === "error") color = "text-destructive font-medium";
-                if (log.type === "warn") color = "text-amber-500 font-medium";
-                if (log.type === "success") color = "text-emerald-500 font-medium";
-
-                return (
-                  <div key={index} className={cn("flex items-start gap-2 leading-relaxed", color)}>
-                    <span className="shrink-0 text-muted-foreground/50 text-[10px] select-none">
-                      {log.timestamp}
-                    </span>
-                    <span className="whitespace-pre-wrap break-all">{log.text}</span>
-                  </div>
-                );
-              })
-            )}
-            <div ref={logEndRef} />
-          </div>
-        )}
-
-        {activeTab === "terminal" && (
-          <div className="flex h-full flex-col">
-            <div className="flex-1 space-y-1">
-              {cliHistory.map((line, idx) => (
-                <div key={idx} className="whitespace-pre-wrap leading-relaxed text-foreground">
-                  {line}
+          <div className="h-full overflow-y-auto p-3 font-mono text-xs select-text">
+            <div className="space-y-1">
+              {logs.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-6 text-muted-foreground/60 select-none">
+                  <Sparkles className="size-5 mb-1 text-muted-foreground/40" />
+                  <p>No output yet. Click &quot;Run&quot; above to execute current file.</p>
                 </div>
-              ))}
-              <div ref={cliEndRef} />
-            </div>
+              ) : (
+                logs.map((log, index) => {
+                  let color = "text-foreground";
+                  if (log.type === "error") color = "text-destructive font-medium";
+                  if (log.type === "warn") color = "text-amber-500 font-medium";
+                  if (log.type === "success") color = "text-emerald-500 font-medium";
 
-            <form onSubmit={handleCliSubmit} className="mt-2 flex items-center gap-2">
-              <span className="text-primary font-bold select-none">&gt;</span>
-              <input
-                type="text"
-                value={cliInput}
-                onChange={(e) => setCliInput(e.target.value)}
-                placeholder="type a command... (e.g. help, node -v, status)"
-                className="flex-1 bg-transparent text-foreground outline-none placeholder:text-muted-foreground/40 text-xs font-mono"
-              />
-            </form>
+                  return (
+                    <div key={index} className={cn("flex items-start gap-2 leading-relaxed", color)}>
+                      <span className="shrink-0 text-muted-foreground/50 text-[10px] select-none">
+                        {log.timestamp}
+                      </span>
+                      <span className="whitespace-pre-wrap break-all">{log.text}</span>
+                    </div>
+                  );
+                })
+              )}
+              <div ref={logEndRef} />
+            </div>
           </div>
         )}
 
+        {/* Problems tab */}
         {activeTab === "problems" && (
           <div className="flex flex-col items-center justify-center py-6 text-muted-foreground select-none">
             <CheckCircle2 className="size-5 mb-1 text-emerald-500" />
-            <p>No problems detected in workspace files.</p>
+            <p className="text-xs">No problems detected in workspace files.</p>
           </div>
         )}
       </div>
