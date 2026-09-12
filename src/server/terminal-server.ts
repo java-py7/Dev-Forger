@@ -13,9 +13,42 @@ import {
 
 const DEFAULT_PORT = Number(process.env.TERMINAL_PORT) || 3001;
 
-// Guard against Windows ConPTY AttachConsole cleanup edge-case
+// ---------------------------------------------------------------------------
+// PTY Session Pool — keeps shell processes alive for 30 s after disconnect
+// so that a reconnecting client reattaches to the same shell.
+// ---------------------------------------------------------------------------
+interface PtySession {
+  ptyProcess: pty.IPty;
+  projectId: string;
+  workspaceDir: string;
+  shell: string;
+  args: string[];
+  killTimer: NodeJS.Timeout | null;
+  activeWs: WebSocket | null;
+  outputDisposable: pty.IDisposable | null;
+  exitDisposable: pty.IDisposable | null;
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __ptySessions: Map<string, PtySession> | undefined;
+}
+
+const ptySessions = globalThis.__ptySessions ?? new Map<string, PtySession>();
+globalThis.__ptySessions = ptySessions;
+
+/** Key used to look up a reusable PTY for a given project+user. */
+function sessionKey(projectId: string, userId: string) {
+  return `${projectId}::${userId}`;
+}
+
+// Guard against Windows ConPTY AttachConsole cleanup edge-case and port conflicts on hot-reload
 process.on("uncaughtException", (err: any) => {
-  if (err?.message?.includes("AttachConsole") || err?.code === "EPIPE") {
+  if (
+    err?.message?.includes("AttachConsole") ||
+    err?.code === "EPIPE" ||
+    err?.code === "EADDRINUSE" // already running from a previous hot-reload cycle
+  ) {
     return;
   }
   console.error("[Terminal Server] Uncaught exception:", err);
@@ -144,6 +177,7 @@ export function startTerminalServer(port: number = DEFAULT_PORT): Promise<Termin
 
       let resolvedCwd = "";
       let activeProjectId = projectIdParam || "";
+      let activeUserId = "anon";
 
       // 1. Check ticket authorization first
       if (ticketParam) {
@@ -151,6 +185,7 @@ export function startTerminalServer(port: number = DEFAULT_PORT): Promise<Termin
         if (ticketData) {
           resolvedCwd = ticketData.workspaceDir;
           activeProjectId = ticketData.projectId;
+          activeUserId = ticketData.userId;
         } else {
           console.warn("[Terminal] Invalid or expired ticket received");
         }
@@ -187,72 +222,106 @@ export function startTerminalServer(port: number = DEFAULT_PORT): Promise<Termin
         } catch {}
       }
 
-      const { shell, args } = getAvailableShell();
-
-      console.log(
-        `[Terminal] Spawning shell in project workspace: ${resolvedCwd} (shell: ${path.basename(shell)})`
-      );
-
-      let ptyProcess: pty.IPty | null = null;
-
-      try {
-        ptyProcess = pty.spawn(shell, args, {
+      const spawnPty = (cwd: string, cols: number, rows: number) => {
+        const { shell, args } = getAvailableShell();
+        console.log(
+          `[Terminal] Spawning shell in project workspace: ${cwd} (shell: ${path.basename(shell)})`
+        );
+        const newPty = pty.spawn(shell, args, {
           name: "xterm-256color",
-          cols: initialCols > 0 ? initialCols : 80,
-          rows: initialRows > 0 ? initialRows : 24,
-          cwd: resolvedCwd,
+          cols: cols > 0 ? cols : 80,
+          rows: rows > 0 ? rows : 24,
+          cwd,
           env: {
             ...process.env,
             TERM: "xterm-256color",
             COLORTERM: "truecolor",
           } as Record<string, string>,
         });
-      } catch (err: any) {
-        console.error("[Terminal] Failed to spawn PTY:", err);
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            message: `Failed to spawn shell: ${err.message}`,
-          })
+        activeSessions.add(newPty);
+        return { ptyProcess: newPty, shell, args };
+      };
+
+      // ------------------------------------------------------------------
+      // Reattach to existing PTY or spawn fresh one
+      // ------------------------------------------------------------------
+      const sKey = sessionKey(activeProjectId, activeUserId);
+      let session = ptySessions.get(sKey);
+
+      if (session && session.ptyProcess.pid) {
+        // Cancel pending kill timer immediately
+        if (session.killTimer) {
+          clearTimeout(session.killTimer);
+          session.killTimer = null;
+        }
+
+        // If an older WebSocket was still linked, cleanly supersede it
+        if (session.activeWs && session.activeWs !== ws) {
+          try {
+            const oldWs = session.activeWs;
+            session.activeWs = null;
+            oldWs.close(1000, "Superseded by new terminal connection");
+          } catch {}
+        }
+
+        // Dispose previous output and exit listeners so output is never duplicated
+        if (session.outputDisposable) {
+          try { session.outputDisposable.dispose(); } catch {}
+          session.outputDisposable = null;
+        }
+        if (session.exitDisposable) {
+          try { session.exitDisposable.dispose(); } catch {}
+          session.exitDisposable = null;
+        }
+
+        console.log(
+          `[Terminal] Reattaching to existing PTY (pid ${session.ptyProcess.pid}) for project ${activeProjectId}`
         );
-        ws.close();
-        return;
+      } else {
+        const spawned = spawnPty(resolvedCwd, initialCols, initialRows);
+        session = {
+          ptyProcess: spawned.ptyProcess,
+          projectId: activeProjectId,
+          workspaceDir: resolvedCwd,
+          shell: spawned.shell,
+          args: spawned.args,
+          killTimer: null,
+          activeWs: null,
+          outputDisposable: null,
+          exitDisposable: null,
+        };
+        ptySessions.set(sKey, session);
       }
 
-      activeSessions.add(ptyProcess);
+      // Link current WebSocket to the active session
+      session.activeWs = ws;
 
-      // Notify client that terminal process is spawned
+      const currentSession = session;
+      const ptyProcess = currentSession.ptyProcess;
+
+      // Notify client that terminal process is ready
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(
           JSON.stringify({
             type: "status",
             status: "connected",
             pid: ptyProcess.pid,
-            shell: path.basename(shell),
-            cwd: resolvedCwd,
+            shell: path.basename(currentSession.shell),
+            cwd: currentSession.workspaceDir,
             projectId: activeProjectId,
           })
         );
       }
 
-      // Set up filesystem watcher for Explorer live synchronization
-      let unwatchFs: (() => void) | null = null;
-      if (resolvedCwd) {
-        unwatchFs = watchWorkspace(resolvedCwd, () => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(
-              JSON.stringify({
-                type: "fs_change",
-                projectId: activeProjectId,
-                dir: resolvedCwd,
-              })
-            );
-          }
-        });
-      }
+      // Resize to match the new client's viewport
+      try {
+        if (initialCols > 0 && initialRows > 0) {
+          ptyProcess.resize(initialCols, initialRows);
+        }
+      } catch {}
 
-      // Stream PTY output to WebSocket
-      ptyProcess.onData((data: string) => {
+      // Stream PTY output strictly to THIS active WebSocket
+      const outputDisposable = ptyProcess.onData((data: string) => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(
             JSON.stringify({
@@ -262,14 +331,13 @@ export function startTerminalServer(port: number = DEFAULT_PORT): Promise<Termin
           );
         }
       });
+      currentSession.outputDisposable = outputDisposable;
 
       // Handle PTY process exit
-      ptyProcess.onExit(({ exitCode, signal }) => {
+      const exitDisposable = ptyProcess.onExit(({ exitCode, signal }) => {
         console.log(`[Terminal] Shell process exited (code ${exitCode}, signal ${signal})`);
-        if (ptyProcess) {
-          activeSessions.delete(ptyProcess);
-          ptyProcess = null;
-        }
+        activeSessions.delete(ptyProcess);
+        ptySessions.delete(sKey);
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(
             JSON.stringify({
@@ -281,32 +349,88 @@ export function startTerminalServer(port: number = DEFAULT_PORT): Promise<Termin
           ws.close();
         }
       });
+      currentSession.exitDisposable = exitDisposable;
+
+      // Set up filesystem watcher for this connection
+      const unwatchFs = watchWorkspace(currentSession.workspaceDir, () => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "fs_change",
+              projectId: activeProjectId,
+              dir: currentSession.workspaceDir,
+            })
+          );
+        }
+      });
 
       // Handle incoming messages from frontend xterm
       ws.on("message", (rawMessage) => {
-        if (!ptyProcess) return;
-
         try {
           const messageStr = rawMessage.toString();
           let parsed: any;
           try {
             parsed = JSON.parse(messageStr);
           } catch {
-            ptyProcess.write(messageStr);
+            currentSession.ptyProcess.write(messageStr);
             return;
           }
 
           if (parsed.type === "input" && typeof parsed.data === "string") {
-            ptyProcess.write(parsed.data);
+            currentSession.ptyProcess.write(parsed.data);
           } else if (parsed.type === "resize") {
             const cols = Number(parsed.cols);
             const rows = Number(parsed.rows);
             if (cols > 0 && rows > 0 && !isNaN(cols) && !isNaN(rows)) {
-              ptyProcess.resize(cols, rows);
+              try { currentSession.ptyProcess.resize(cols, rows); } catch {}
             }
           } else if (parsed.type === "ping") {
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: "pong" }));
+            }
+          } else if (parsed.type === "restart") {
+            console.log(`[Terminal] Explicit restart requested for session ${sKey}`);
+            try {
+              currentSession.outputDisposable?.dispose();
+              currentSession.exitDisposable?.dispose();
+              activeSessions.delete(currentSession.ptyProcess);
+              currentSession.ptyProcess.kill();
+            } catch {}
+
+            const cols = Number(parsed.cols) || initialCols;
+            const rows = Number(parsed.rows) || initialRows;
+            const spawned = spawnPty(currentSession.workspaceDir, cols, rows);
+            currentSession.ptyProcess = spawned.ptyProcess;
+            currentSession.shell = spawned.shell;
+            currentSession.args = spawned.args;
+
+            currentSession.outputDisposable = currentSession.ptyProcess.onData((data: string) => {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "output", data }));
+              }
+            });
+
+            currentSession.exitDisposable = currentSession.ptyProcess.onExit(({ exitCode, signal }) => {
+              activeSessions.delete(currentSession.ptyProcess);
+              ptySessions.delete(sKey);
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "exit", exitCode, signal }));
+                ws.close();
+              }
+            });
+
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({
+                  type: "status",
+                  status: "connected",
+                  pid: currentSession.ptyProcess.pid,
+                  shell: path.basename(currentSession.shell),
+                  cwd: currentSession.workspaceDir,
+                  projectId: activeProjectId,
+                  restarted: true,
+                })
+              );
             }
           }
         } catch (error) {
@@ -314,22 +438,39 @@ export function startTerminalServer(port: number = DEFAULT_PORT): Promise<Termin
         }
       });
 
-      // Clean up on WebSocket disconnect
+      // Clean up on WebSocket disconnect — keep PTY alive for 30 s (grace period)
       ws.on("close", () => {
-        console.log("[Terminal] Client disconnected, killing PTY session");
-        if (unwatchFs) {
-          try {
-            unwatchFs();
-          } catch {}
-          unwatchFs = null;
-        }
+        // Always unregister this connection's fs watcher
+        try { unwatchFs(); } catch {}
 
-        if (ptyProcess) {
-          activeSessions.delete(ptyProcess);
-          try {
-            ptyProcess.kill();
-          } catch {}
-          ptyProcess = null;
+        // Only manage PTY session lifecycle if THIS socket was the active one
+        if (currentSession.activeWs === ws) {
+          console.log(
+            `[Terminal] Active client disconnected — keeping PTY alive for 30 s (pid ${currentSession.ptyProcess.pid})`
+          );
+          currentSession.activeWs = null;
+          if (currentSession.outputDisposable) {
+            try { currentSession.outputDisposable.dispose(); } catch {}
+            currentSession.outputDisposable = null;
+          }
+          if (currentSession.exitDisposable) {
+            try { currentSession.exitDisposable.dispose(); } catch {}
+            currentSession.exitDisposable = null;
+          }
+
+          // Schedule PTY kill after 30s grace period only if no new socket attaches
+          currentSession.killTimer = setTimeout(() => {
+            if (currentSession.activeWs === null) {
+              console.log(
+                `[Terminal] Grace period expired — killing PTY (pid ${currentSession.ptyProcess.pid})`
+              );
+              activeSessions.delete(currentSession.ptyProcess);
+              ptySessions.delete(sKey);
+              try { currentSession.ptyProcess.kill(); } catch {}
+            }
+          }, 30_000);
+        } else {
+          console.log(`[Terminal] Inactive/superseded socket closed cleanly.`);
         }
       });
 
@@ -340,7 +481,15 @@ export function startTerminalServer(port: number = DEFAULT_PORT): Promise<Termin
 
     server.on("error", (err: any) => {
       if (err.code === "EADDRINUSE") {
-        console.warn(`[Terminal Server] Port ${port} is already in use. Assuming server is active.`);
+        // Port is already held — likely a previous hot-reload cycle's server.
+        // Resolve gracefully so Next.js does not crash; the existing process
+        // is already handling WebSocket connections.
+        console.log(
+          `[Terminal Server] Port ${port} already in use — reusing existing terminal server.`
+        );
+        // Close the un-bound server/wss objects we just created
+        try { wss.close(); } catch {}
+        try { server.close(); } catch {}
         resolve({
           server,
           wss,

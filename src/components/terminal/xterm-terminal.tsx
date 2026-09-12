@@ -9,8 +9,12 @@ import { getTerminalTicketAction } from "@/app/(dashboard)/projects/[slug]/works
 export interface XTermTerminalHandle {
   clear: () => void;
   reconnect: () => void;
+  restart: () => void;
   focus: () => void;
 }
+
+// Maximum bytes to keep in the replay buffer (2 MB)
+const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 
 interface XTermTerminalProps {
   isVisible?: boolean;
@@ -40,6 +44,24 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
     const fitAddonRef = useRef<any>(null);
     const socketRef = useRef<WebSocket | null>(null);
 
+    // Monotonic sequence counter to guarantee only the latest connection attempt is active
+    const connectionSeqRef = useRef<number>(0);
+    const initPromiseRef = useRef<Promise<void> | null>(null);
+
+    // Stable ref for onFilesChanged callback
+    const onFilesChangedRef = useRef(onFilesChanged);
+    useEffect(() => {
+      onFilesChangedRef.current = onFilesChanged;
+    });
+
+    // Replay buffer: accumulates PTY output so history survives tab switches
+    const outputBufferRef = useRef<string>("");
+
+    // Timers
+    const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+    const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const fsChangeDebounceRef = useRef<NodeJS.Timeout | null>(null);
+
     const [status, setStatus] = useState<"connecting" | "connected" | "disconnected" | "error">(
       "connecting"
     );
@@ -53,25 +75,20 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
       [onStatusChange]
     );
 
-    const connectTerminal = useCallback(async () => {
-      if (!containerRef.current) return;
+    // -----------------------------------------------------------------------
+    // initTerminal — creates the xterm Terminal instance ONCE.
+    // Keystroke forwarding (term.onData) is attached ONCE here.
+    // -----------------------------------------------------------------------
+    const initTerminal = useCallback(async () => {
+      if (terminalRef.current) return;
+      if (initPromiseRef.current) return initPromiseRef.current;
 
-      updateStatus("connecting");
-      setErrorMessage(null);
-
-      // Clean up previous socket if any
-      if (socketRef.current) {
-        socketRef.current.onclose = null;
-        socketRef.current.onerror = null;
-        socketRef.current.onmessage = null;
-        socketRef.current.close();
-        socketRef.current = null;
-      }
-
-      // Initialize xterm and fit addon dynamically if not already initialized
-      if (!terminalRef.current) {
+      initPromiseRef.current = (async () => {
+        if (!containerRef.current) return;
         const { Terminal } = await import("@xterm/xterm");
         const { FitAddon } = await import("@xterm/addon-fit");
+
+        if (terminalRef.current) return;
 
         const term = new Terminal({
           cursorBlink: true,
@@ -81,6 +98,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
           lineHeight: 1.25,
           letterSpacing: 0,
           allowTransparency: true,
+          scrollback: 5000,
           theme: {
             background: "#080b11",
             foreground: "#f1f5f9",
@@ -113,157 +131,256 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
         containerRef.current.innerHTML = "";
         term.open(containerRef.current);
 
+        // Forward keystrokes strictly through the active WebSocket reference.
+        // Attaching this ONCE prevents any possibility of double or triple keystrokes.
+        term.onData((data: string) => {
+          if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({ type: "input", data }));
+          }
+        });
+
         terminalRef.current = term;
         fitAddonRef.current = fitAddon;
+
+        // Replay any buffered output from before this mount
+        if (outputBufferRef.current) {
+          term.write(outputBufferRef.current);
+        }
 
         requestAnimationFrame(() => {
           try {
             fitAddon.fit();
           } catch {}
         });
-      }
-
-      const term = terminalRef.current;
-      const fitAddon = fitAddonRef.current;
-
-      // Determine WebSocket URL
-      const host =
-        typeof window !== "undefined" ? window.location.hostname : "localhost";
-      const resolvedWsUrl =
-        wsUrl ||
-        process.env.NEXT_PUBLIC_TERMINAL_WS_URL ||
-        `ws://${host}:3001`;
-
-      // Request secure terminal ticket if projectId is provided
-      let ticket = "";
-      if (projectId) {
-        try {
-          const res = await getTerminalTicketAction(projectId);
-          if (res.success && res.ticketId) {
-            ticket = res.ticketId;
-          }
-        } catch (e) {
-          console.warn("[Terminal] Failed to fetch terminal ticket:", e);
-        }
-      }
-
-      const params = new URLSearchParams();
-      if (term.cols) params.set("cols", String(term.cols));
-      if (term.rows) params.set("rows", String(term.rows));
-      if (ticket) params.set("ticket", ticket);
-      if (projectId) params.set("projectId", projectId);
-      if (projectSlug) params.set("projectSlug", projectSlug);
-      if (cwd) params.set("cwd", cwd);
-
-      const fullUrl = `${resolvedWsUrl}?${params.toString()}`;
-
-      try {
-        const ws = new WebSocket(fullUrl);
-        socketRef.current = ws;
-
-        ws.onopen = () => {
-          updateStatus("connected");
-          setErrorMessage(null);
-          try {
-            fitAddon.fit();
-            ws.send(
-              JSON.stringify({
-                type: "resize",
-                cols: term.cols,
-                rows: term.rows,
-              })
-            );
-          } catch {}
-          term.focus();
-        };
-
-        let commandIdleTimer: NodeJS.Timeout | null = null;
-
-        ws.onmessage = (event) => {
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === "output" && typeof msg.data === "string") {
-              term.write(msg.data);
-              // Reset idle timer while output is streaming, trigger sync once command finishes
-              if (commandIdleTimer) {
-                clearTimeout(commandIdleTimer);
-                commandIdleTimer = setTimeout(() => {
-                  onFilesChanged?.();
-                  commandIdleTimer = null;
-                }, 500);
-              }
-            } else if (msg.type === "fs_change") {
-              // Filesystem was modified on the server workspace (e.g. via terminal mkdir/touch/rm/npm)
-              onFilesChanged?.();
-            } else if (msg.type === "status") {
-              // Connection status
-            } else if (msg.type === "exit") {
-              term.write(`\r\n\x1b[33m[Process exited with code ${msg.exitCode}]\x1b[0m\r\n`);
-              updateStatus("disconnected");
-            } else if (msg.type === "error") {
-              term.write(`\r\n\x1b[31m[Error: ${msg.message}]\x1b[0m\r\n`);
-              setErrorMessage(msg.message);
-            }
-          } catch {
-            term.write(event.data);
-          }
-        };
-
-        ws.onerror = () => {
-          updateStatus("error");
-          setErrorMessage("WebSocket connection to terminal server failed.");
-        };
-
-        ws.onclose = () => {
-          updateStatus("disconnected");
-        };
-
-        const disposable = term.onData((data: string) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "input", data }));
-
-            // If user pressed Enter, schedule idle sync to ensure file tree updates
-            if (data.includes("\r") || data.includes("\n")) {
-              if (commandIdleTimer) clearTimeout(commandIdleTimer);
-              commandIdleTimer = setTimeout(() => {
-                onFilesChanged?.();
-                commandIdleTimer = null;
-              }, 600);
-            }
-          }
-        });
-
-        return () => {
-          if (commandIdleTimer) clearTimeout(commandIdleTimer);
-          disposable.dispose();
-        };
-      } catch (err: any) {
-        updateStatus("error");
-        setErrorMessage(err?.message || "Failed to establish terminal connection.");
-      }
-    }, [projectId, projectSlug, cwd, wsUrl, updateStatus, onFilesChanged]);
-
-    // Initial mount connection
-    useEffect(() => {
-      let cleanup: (() => void) | undefined;
-      connectTerminal().then((c) => {
-        cleanup = c;
+      })().finally(() => {
+        initPromiseRef.current = null;
       });
 
-      return () => {
-        cleanup?.();
-        if (socketRef.current) {
-          socketRef.current.close();
-          socketRef.current = null;
+      return initPromiseRef.current;
+    }, []);
+
+    // -----------------------------------------------------------------------
+    // connectSocket — strictly single-flight connection with sequence guard
+    // -----------------------------------------------------------------------
+    const connectSocket = useCallback(
+      async (restartShell = false) => {
+        const seq = ++connectionSeqRef.current;
+
+        // Clear existing timers
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
         }
-        if (terminalRef.current) {
-          terminalRef.current.dispose();
-          terminalRef.current = null;
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current);
+          connectionTimeoutRef.current = null;
+        }
+
+        // Close previous socket synchronously so it never lingers
+        if (socketRef.current) {
+          const prev = socketRef.current;
+          socketRef.current = null;
+          prev.onopen = null;
+          prev.onclose = null;
+          prev.onerror = null;
+          prev.onmessage = null;
+          try {
+            prev.close();
+          } catch {}
+        }
+
+        updateStatus("connecting");
+        setErrorMessage(null);
+
+        // Ensure xterm instance is initialized
+        await initTerminal();
+        if (seq !== connectionSeqRef.current) return;
+
+        const term = terminalRef.current;
+        const fitAddon = fitAddonRef.current;
+        if (!term) return;
+
+        // Request a secure terminal ticket
+        let ticket = "";
+        if (projectId) {
+          try {
+            const res = await getTerminalTicketAction(projectId);
+            if (seq !== connectionSeqRef.current) return;
+            if (res.success && res.ticketId) ticket = res.ticketId;
+          } catch (e) {
+            console.warn("[Terminal] Failed to fetch terminal ticket:", e);
+          }
+        }
+
+        if (seq !== connectionSeqRef.current) return;
+
+        // Determine WebSocket URL
+        const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
+        const resolvedWsUrl =
+          wsUrl ||
+          process.env.NEXT_PUBLIC_TERMINAL_WS_URL ||
+          `ws://${host}:3001`;
+
+        const params = new URLSearchParams();
+        if (term.cols) params.set("cols", String(term.cols));
+        if (term.rows) params.set("rows", String(term.rows));
+        if (ticket) params.set("ticket", ticket);
+        if (projectId) params.set("projectId", projectId);
+        if (projectSlug) params.set("projectSlug", projectSlug);
+        if (cwd) params.set("cwd", cwd);
+
+        try {
+          const ws = new WebSocket(`${resolvedWsUrl}?${params.toString()}`);
+          socketRef.current = ws;
+
+          // Guard against hanging connections: timeout after 8 seconds
+          connectionTimeoutRef.current = setTimeout(() => {
+            if (ws.readyState !== WebSocket.OPEN && seq === connectionSeqRef.current) {
+              try {
+                ws.close();
+              } catch {}
+              updateStatus("error");
+              setErrorMessage("Connection to terminal server timed out. Make sure the server is running on port 3001.");
+            }
+          }, 8000);
+
+          ws.onopen = () => {
+            if (seq !== connectionSeqRef.current) {
+              try {
+                ws.close();
+              } catch {}
+              return;
+            }
+            if (connectionTimeoutRef.current) {
+              clearTimeout(connectionTimeoutRef.current);
+              connectionTimeoutRef.current = null;
+            }
+
+            updateStatus("connected");
+            setErrorMessage(null);
+
+            try {
+              fitAddon?.fit();
+              ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+            } catch {}
+
+            if (restartShell) {
+              ws.send(JSON.stringify({ type: "restart", cols: term.cols, rows: term.rows }));
+            }
+
+            term.focus();
+
+            // Heartbeat ping every 20 seconds to prevent idle drops
+            pingIntervalRef.current = setInterval(() => {
+              if (ws.readyState === WebSocket.OPEN) {
+                try {
+                  ws.send(JSON.stringify({ type: "ping" }));
+                } catch {}
+              }
+            }, 20000);
+          };
+
+          ws.onmessage = (event) => {
+            if (seq !== connectionSeqRef.current) return;
+
+            try {
+              const msg = JSON.parse(event.data);
+              if (msg.type === "output" && typeof msg.data === "string") {
+                term.write(msg.data);
+                outputBufferRef.current += msg.data;
+                if (outputBufferRef.current.length > MAX_BUFFER_BYTES) {
+                  outputBufferRef.current = outputBufferRef.current.slice(
+                    outputBufferRef.current.length - MAX_BUFFER_BYTES
+                  );
+                }
+              } else if (msg.type === "fs_change") {
+                // Debounce filesystem change notifications by 200ms
+                if (fsChangeDebounceRef.current) clearTimeout(fsChangeDebounceRef.current);
+                fsChangeDebounceRef.current = setTimeout(() => {
+                  onFilesChangedRef.current?.();
+                  fsChangeDebounceRef.current = null;
+                }, 200);
+              } else if (msg.type === "exit") {
+                term.write(`\r\n\x1b[33m[Process exited with code ${msg.exitCode}]\x1b[0m\r\n`);
+                updateStatus("disconnected");
+              } else if (msg.type === "error") {
+                term.write(`\r\n\x1b[31m[Error: ${msg.message}]\x1b[0m\r\n`);
+                setErrorMessage(msg.message);
+              } else if (msg.type === "pong") {
+                // Ping-pong alive
+              }
+            } catch {
+              term.write(event.data);
+            }
+          };
+
+          ws.onerror = () => {
+            if (seq !== connectionSeqRef.current) return;
+            if (connectionTimeoutRef.current) {
+              clearTimeout(connectionTimeoutRef.current);
+              connectionTimeoutRef.current = null;
+            }
+            updateStatus("error");
+            setErrorMessage("Terminal connection failed. Please verify the terminal server is active.");
+          };
+
+          ws.onclose = () => {
+            if (seq !== connectionSeqRef.current) return;
+            if (connectionTimeoutRef.current) {
+              clearTimeout(connectionTimeoutRef.current);
+              connectionTimeoutRef.current = null;
+            }
+            if (pingIntervalRef.current) {
+              clearInterval(pingIntervalRef.current);
+              pingIntervalRef.current = null;
+            }
+            updateStatus("disconnected");
+          };
+        } catch (err: any) {
+          if (seq !== connectionSeqRef.current) return;
+          updateStatus("error");
+          setErrorMessage(err?.message || "Failed to establish terminal connection.");
+        }
+      },
+      [projectId, projectSlug, cwd, wsUrl, updateStatus, initTerminal]
+    );
+
+    // Lifecycle: connect on mount, clean up synchronously on unmount
+    useEffect(() => {
+      connectSocket(false);
+
+      return () => {
+        // Increment sequence so in-flight async operations self-abort
+        connectionSeqRef.current++;
+
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current);
+          connectionTimeoutRef.current = null;
+        }
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
+        if (fsChangeDebounceRef.current) {
+          clearTimeout(fsChangeDebounceRef.current);
+          fsChangeDebounceRef.current = null;
+        }
+
+        if (socketRef.current) {
+          const s = socketRef.current;
+          socketRef.current = null;
+          s.onopen = null;
+          s.onclose = null;
+          s.onerror = null;
+          s.onmessage = null;
+          try {
+            s.close();
+          } catch {}
         }
       };
-    }, [connectTerminal]);
+    }, [connectSocket]);
 
-    // ResizeObserver to automatically fit terminal when container dimensions change
+    // ResizeObserver to fit terminal when container dimensions change
     useEffect(() => {
       if (!containerRef.current || !fitAddonRef.current) return;
 
@@ -312,16 +429,23 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
       () => ({
         clear: () => {
           terminalRef.current?.clear();
+          outputBufferRef.current = "";
         },
         reconnect: () => {
           terminalRef.current?.clear();
-          connectTerminal();
+          outputBufferRef.current = "";
+          connectSocket(false);
+        },
+        restart: () => {
+          terminalRef.current?.clear();
+          outputBufferRef.current = "";
+          connectSocket(true);
         },
         focus: () => {
           terminalRef.current?.focus();
         },
       }),
-      [connectTerminal]
+      [connectSocket]
     );
 
     return (
@@ -355,7 +479,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
                 type="button"
                 size="sm"
                 variant="outline"
-                onClick={connectTerminal}
+                onClick={() => connectSocket(false)}
                 className="mt-1 gap-1.5 text-xs h-7 cursor-pointer"
               >
                 <RefreshCw className="size-3" />

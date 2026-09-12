@@ -63,43 +63,52 @@ export function TerminalPanel({
     }
   }, [logs, isOpen, activeTab]);
 
-  if (!isOpen) {
-    return (
-      <div className="flex h-8 w-full items-center justify-between border-t bg-muted/40 px-3 select-none text-xs">
-        <button
-          type="button"
-          onClick={onToggle}
-          className="flex items-center gap-2 font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-        >
-          <TerminalIcon className="size-3.5" />
-          <span>Terminal / Console</span>
-          {logs.length > 0 && (
-            <span className="flex size-4 items-center justify-center rounded-full bg-primary/20 text-[10px] font-semibold text-primary">
-              {logs.length}
-            </span>
-          )}
-        </button>
-
-        <button
-          type="button"
-          onClick={onToggle}
-          className="flex size-6 items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
-        >
-          <ChevronUp className="size-3.5" />
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div
       className={cn(
         "flex w-full flex-col border-t bg-[#080b11] transition-all duration-150 select-none",
-        isExpandedFull ? "h-96" : "h-56"
+        !isOpen ? "h-8" : isExpandedFull ? "h-96" : "h-56"
       )}
     >
-      {/* Terminal Top Tabs Bar */}
-      <div className="flex h-8 items-center justify-between border-b border-border/40 bg-muted/30 px-3 text-xs">
+      {/* Collapsed Header Bar */}
+      {!isOpen ? (
+        <div className="flex h-8 w-full items-center justify-between border-b border-border/20 bg-muted/40 px-3 select-none text-xs">
+          <button
+            type="button"
+            onClick={onToggle}
+            className="flex items-center gap-2 font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          >
+            <TerminalIcon className="size-3.5" />
+            <span>Terminal / Console</span>
+            <Circle
+              className={cn(
+                "size-2 fill-current transition-colors ml-0.5",
+                terminalStatus === "connected"
+                  ? "text-emerald-500 fill-emerald-500"
+                  : terminalStatus === "connecting"
+                  ? "text-amber-500 fill-amber-500 animate-pulse"
+                  : "text-rose-500 fill-rose-500"
+              )}
+            />
+            {logs.length > 0 && (
+              <span className="flex size-4 items-center justify-center rounded-full bg-primary/20 text-[10px] font-semibold text-primary">
+                {logs.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={onToggle}
+            className="flex size-6 items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
+            title="Expand Terminal"
+          >
+            <ChevronUp className="size-3.5" />
+          </button>
+        </div>
+      ) : (
+        /* Terminal Top Tabs Bar */
+        <div className="flex h-8 items-center justify-between border-b border-border/40 bg-muted/30 px-3 text-xs">
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -181,7 +190,13 @@ export function TerminalPanel({
                 size="icon"
                 className="size-6 text-muted-foreground hover:text-foreground cursor-pointer"
                 title="Restart Shell Session"
-                onClick={() => xtermRef.current?.reconnect()}
+                onClick={() => {
+                  if (xtermRef.current?.restart) {
+                    xtermRef.current.restart();
+                  } else {
+                    xtermRef.current?.reconnect();
+                  }
+                }}
               >
                 <RefreshCw className="size-3" />
               </Button>
@@ -227,10 +242,11 @@ export function TerminalPanel({
             <ChevronDown className="size-3.5" />
           </Button>
         </div>
-      </div>
+        </div>
+      )}
 
       {/* Content Area */}
-      <div className="flex-1 overflow-hidden relative">
+      <div className={cn("flex-1 overflow-hidden relative", !isOpen && "hidden")}>
         {/* Real xterm.js terminal - preserved in DOM to maintain shell state */}
         <div
           className={cn(
