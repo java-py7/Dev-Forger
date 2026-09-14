@@ -14,6 +14,7 @@ import {
   Minimize2,
   RefreshCw,
   Circle,
+  Globe,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -35,6 +36,9 @@ interface TerminalPanelProps {
   projectId?: string;
   projectSlug?: string;
   onFilesChanged?: () => void;
+  onDevServerDetected?: (url: string, port: number) => void;
+  detectedServers?: Array<{ port: number; url: string }>;
+  onOpenPreview?: (url?: string) => void;
 }
 
 export function TerminalPanel({
@@ -47,6 +51,9 @@ export function TerminalPanel({
   projectId,
   projectSlug,
   onFilesChanged,
+  onDevServerDetected,
+  detectedServers = [],
+  onOpenPreview,
 }: TerminalPanelProps) {
   const [activeTab, setActiveTab] = useState<"output" | "terminal" | "problems">("terminal");
   const [isExpandedFull, setIsExpandedFull] = useState(false);
@@ -170,7 +177,20 @@ export function TerminalPanel({
         </div>
 
         {/* Action icons right */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
+          {detectedServers.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onOpenPreview?.(detectedServers[detectedServers.length - 1].url)}
+              className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors cursor-pointer mr-1"
+              title="Click to open this running dev server in Live Preview"
+            >
+              <Globe className="size-3 animate-pulse text-emerald-400" />
+              <span>Port {detectedServers[detectedServers.length - 1].port}</span>
+              <span className="underline ml-0.5">Preview</span>
+            </button>
+          )}
+
           {activeTab === "terminal" && (
             <>
               <Button
@@ -262,6 +282,7 @@ export function TerminalPanel({
             cwd={cwd}
             onStatusChange={setTerminalStatus}
             onFilesChanged={onFilesChanged}
+            onDevServerDetected={onDevServerDetected}
           />
         </div>
 

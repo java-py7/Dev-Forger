@@ -17,6 +17,7 @@ import {
   Circle,
   Loader2,
   Share2,
+  Globe,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,7 @@ import { CodeEditor } from "./code-editor";
 import { FileExplorer } from "./file-explorer";
 import { EditorTabs } from "./editor-tabs";
 import { TerminalPanel, LogEntry } from "../terminal/terminal-panel";
+import { LivePreview } from "./live-preview";
 import { WorkspaceFileItem, OpenTab, detectLanguage } from "./types";
 import {
   saveFileContent,
@@ -143,6 +145,94 @@ export function IdeLayout({
     },
   ]);
 
+  // Live Preview states
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewPath, setPreviewPath] = useState("index.html");
+  const [previewReloadCounter, setPreviewReloadCounter] = useState(0);
+  const [splitPercent, setSplitPercent] = useState(50);
+  const [isDraggingSplit, setIsDraggingSplit] = useState(false);
+  const [detectedServers, setDetectedServers] = useState<Array<{ port: number; url: string; label?: string }>>([]);
+  const splitAreaRef = useRef<HTMLDivElement>(null);
+
+  // Re-layout Monaco Editor whenever split or preview state changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      window.dispatchEvent(new Event("resize"));
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [previewOpen, splitPercent]);
+
+  // Keyboard shortcut to toggle Live Preview (Alt+P or Ctrl+Shift+V)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        (e.altKey && (e.key === "p" || e.key === "P")) ||
+        (e.ctrlKey && e.shiftKey && (e.key === "v" || e.key === "V"))
+      ) {
+        e.preventDefault();
+        setPreviewOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // Split view dragging handler
+  const handleSplitMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDraggingSplit(true);
+
+    const startX = e.clientX;
+    const startPercent = splitPercent;
+    const containerWidth = splitAreaRef.current?.getBoundingClientRect().width || 1000;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = moveEvent.clientX - startX;
+      const deltaPercent = (deltaX / containerWidth) * 100;
+      const newPercent = Math.min(80, Math.max(20, startPercent + deltaPercent));
+      setSplitPercent(newPercent);
+    };
+
+    const onMouseUp = () => {
+      setIsDraggingSplit(false);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      setTimeout(() => {
+        window.dispatchEvent(new Event("resize"));
+      }, 50);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
+
+  // Detected server handler
+  const handleDevServerDetected = useCallback((url: string, port: number) => {
+    setDetectedServers((prev) => {
+      if (prev.some((s) => s.port === port)) return prev;
+      return [...prev, { port, url, label: `Port ${port}` }];
+    });
+    setLogs((prev) => [
+      ...prev,
+      {
+        type: "success",
+        text: `[Dev Server Detected] Listening on ${url}. Open Live Preview to view.`,
+        timestamp: new Date().toLocaleTimeString(),
+      },
+    ]);
+  }, []);
+
+  const handleOpenServerPreview = useCallback((targetUrl?: string) => {
+    setPreviewOpen(true);
+    setPreviewReloadCounter((c) => c + 1);
+  }, []);
+
+  const handlePreviewFile = useCallback((file: WorkspaceFileItem) => {
+    setPreviewPath(file.path);
+    setPreviewOpen(true);
+    setPreviewReloadCounter((c) => c + 1);
+  }, []);
+
   // Active file object
   const activeFile = files.find((f) => f.id === activeFileId) || null;
   const currentContent = activeFileId ? (fileBuffers[activeFileId] ?? "") : "";
@@ -174,6 +264,7 @@ export function IdeLayout({
           });
           return next;
         });
+        setPreviewReloadCounter((c) => c + 1);
       }
     } catch (e) {
       console.warn("Failed to sync workspace files:", e);
@@ -348,6 +439,7 @@ export function IdeLayout({
     if (res.success) {
       setSaveStatus("saved");
       setLastSaved(new Date().toLocaleTimeString());
+      setPreviewReloadCounter((c) => c + 1);
 
       // Update in files state
       setFiles((prev) =>
@@ -380,11 +472,27 @@ export function IdeLayout({
   const handleRunCode = () => {
     if (!activeFile) return;
 
-    setTerminalOpen(true);
-    setIsRunning(true);
-
     const time = new Date().toLocaleTimeString();
     const lang = activeFile.language || detectLanguage(activeFile.name);
+
+    // If HTML / Web frontend file: Launch Live Preview!
+    if (lang === "html" || activeFile.name.endsWith(".html") || activeFile.name.endsWith(".htm")) {
+      setPreviewPath(activeFile.path);
+      setPreviewOpen(true);
+      setPreviewReloadCounter((c) => c + 1);
+      setLogs((prev) => [
+        ...prev,
+        {
+          type: "success",
+          text: `[Live Preview] Launched live website preview for ${activeFile.name}`,
+          timestamp: time,
+        },
+      ]);
+      return;
+    }
+
+    setTerminalOpen(true);
+    setIsRunning(true);
 
     setLogs((prev) => [
       ...prev,
@@ -625,6 +733,27 @@ export function IdeLayout({
               </Button>
             )}
 
+            {/* Preview Button */}
+            <Button
+              type="button"
+              variant={previewOpen ? "secondary" : "outline"}
+              size="sm"
+              onClick={() => setPreviewOpen(!previewOpen)}
+              className={cn(
+                "h-7 gap-1.5 px-2.5 text-xs font-medium cursor-pointer transition-all",
+                previewOpen
+                  ? "bg-primary/15 text-primary border-primary/30 shadow-xs"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+              title="Toggle Live Preview (Alt+P)"
+            >
+              <Globe className={cn("size-3.5", previewOpen && "text-primary")} />
+              <span className="hidden sm:inline">Preview</span>
+              {detectedServers.length > 0 && !previewOpen && (
+                <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+              )}
+            </Button>
+
             {/* Run Button */}
             <Button
               type="button"
@@ -632,7 +761,11 @@ export function IdeLayout({
               onClick={handleRunCode}
               disabled={isRunning || !activeFileId}
               className="h-7 gap-1.5 px-3 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-xs"
-              title="Run Code"
+              title={
+                activeFile?.name.endsWith(".html") || activeFile?.language === "html"
+                  ? "Run & Open Live Preview"
+                  : "Run Code"
+              }
             >
               {isRunning ? (
                 <Loader2 className="size-3.5 animate-spin" />
@@ -670,12 +803,13 @@ export function IdeLayout({
                 onFileDeleted={handleFileDeleted}
                 onFileRenamed={handleFileRenamed}
                 onFilesChanged={handleFilesRefreshed}
+                onPreviewFile={handlePreviewFile}
                 canEdit={canEdit}
               />
             </div>
           )}
 
-          {/* Right: Tabs + Monaco Editor + Terminal */}
+          {/* Right: Tabs + Monaco Editor (with Live Preview Split) + Terminal */}
           <div className="flex flex-1 flex-col overflow-hidden bg-background">
             {/* Editor Tabs Bar */}
             <EditorTabs
@@ -685,15 +819,57 @@ export function IdeLayout({
               onCloseTab={handleCloseTab}
             />
 
-            {/* Monaco Editor Container */}
-            <div className="flex-1 overflow-hidden">
-              <CodeEditor
-                file={activeFile}
-                content={currentContent}
-                onChange={handleContentChange}
-                onSave={handleSave}
-                readOnly={!canEdit}
-              />
+            {/* Monaco Editor & Live Preview Split Area */}
+            <div ref={splitAreaRef} className="flex flex-1 overflow-hidden relative">
+              {/* Left: Monaco Code Editor */}
+              <div
+                style={{
+                  width: previewOpen ? `${splitPercent}%` : "100%",
+                }}
+                className="h-full overflow-hidden relative"
+              >
+                <CodeEditor
+                  file={activeFile}
+                  content={currentContent}
+                  onChange={handleContentChange}
+                  onSave={handleSave}
+                  readOnly={!canEdit}
+                />
+              </div>
+
+              {/* Resizable Divider Handle */}
+              {previewOpen && (
+                <div
+                  onMouseDown={handleSplitMouseDown}
+                  className="group relative w-1.5 shrink-0 cursor-col-resize select-none bg-border/40 hover:bg-primary/50 transition-colors z-20 flex items-center justify-center"
+                  title="Drag to resize editor and live preview"
+                >
+                  <div className="h-8 w-0.5 rounded-full bg-muted-foreground/30 group-hover:bg-primary transition-colors" />
+                </div>
+              )}
+
+              {/* Right: Live Preview Panel */}
+              {previewOpen && (
+                <div
+                  style={{
+                    width: `${100 - splitPercent}%`,
+                  }}
+                  className="h-full overflow-hidden flex flex-col relative"
+                >
+                  <LivePreview
+                    projectSlug={project.slug}
+                    workspaceId={workspace.id}
+                    projectName={project.name}
+                    initialPath={previewPath}
+                    detectedServers={detectedServers}
+                    reloadTrigger={previewReloadCounter}
+                    onClose={() => setPreviewOpen(false)}
+                    canEdit={canEdit}
+                    onFileCreated={handleFileCreated}
+                    onSelectFile={handleSelectFile}
+                  />
+                </div>
+              )}
             </div>
 
             {/* Bottom Terminal / Output Panel */}
@@ -706,6 +882,9 @@ export function IdeLayout({
               projectId={project.id}
               projectSlug={project.slug}
               onFilesChanged={handleFsChange}
+              onDevServerDetected={handleDevServerDetected}
+              detectedServers={detectedServers}
+              onOpenPreview={handleOpenServerPreview}
             />
           </div>
         </div>

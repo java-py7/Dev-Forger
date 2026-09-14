@@ -24,6 +24,7 @@ interface XTermTerminalProps {
   wsUrl?: string;
   onStatusChange?: (status: "connecting" | "connected" | "disconnected" | "error") => void;
   onFilesChanged?: () => void;
+  onDevServerDetected?: (url: string, port: number) => void;
 }
 
 export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>(
@@ -36,6 +37,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
       wsUrl,
       onStatusChange,
       onFilesChanged,
+      onDevServerDetected,
     },
     ref
   ) {
@@ -54,8 +56,46 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
       onFilesChangedRef.current = onFilesChanged;
     });
 
+    // Stable ref for onDevServerDetected callback
+    const onDevServerDetectedRef = useRef(onDevServerDetected);
+    useEffect(() => {
+      onDevServerDetectedRef.current = onDevServerDetected;
+    });
+
     // Replay buffer: accumulates PTY output so history survives tab switches
     const outputBufferRef = useRef<string>("");
+    const detectedPortsRef = useRef<Set<number>>(new Set());
+
+    // Scan output for dev server URLs
+    const scanForDevServers = useCallback((text: string) => {
+      if (!text) return;
+      // Strip ANSI escape codes
+      const clean = text.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+
+      // Match URLs like http://localhost:3000 or http://127.0.0.1:5173
+      const urlMatches = clean.matchAll(/https?:\/\/(?:localhost|127\.0\.0\.1):(\d{3,5})/gi);
+      for (const m of urlMatches) {
+        const port = parseInt(m[1], 10);
+        if (port > 0 && port < 65536 && port !== 3001) {
+          if (!detectedPortsRef.current.has(port)) {
+            detectedPortsRef.current.add(port);
+            onDevServerDetectedRef.current?.(`http://localhost:${port}`, port);
+          }
+        }
+      }
+
+      // Match lines like "listening on port 8080" or "port 8080"
+      const portMatches = clean.matchAll(/(?:listening|running|ready)\s+(?:at|on|port)?\s*(?:port\s*)?:?(\d{3,5})/gi);
+      for (const m of portMatches) {
+        const port = parseInt(m[1], 10);
+        if (port > 0 && port < 65536 && port !== 3001) {
+          if (!detectedPortsRef.current.has(port)) {
+            detectedPortsRef.current.add(port);
+            onDevServerDetectedRef.current?.(`http://localhost:${port}`, port);
+          }
+        }
+      }
+    }, []);
 
     // Timers
     const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -293,6 +333,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
                     outputBufferRef.current.length - MAX_BUFFER_BYTES
                   );
                 }
+                scanForDevServers(msg.data);
               } else if (msg.type === "fs_change") {
                 // Debounce filesystem change notifications by 200ms
                 if (fsChangeDebounceRef.current) clearTimeout(fsChangeDebounceRef.current);

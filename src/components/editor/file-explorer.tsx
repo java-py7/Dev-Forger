@@ -16,6 +16,7 @@ import {
   Trash2,
   FolderTree,
   RefreshCw,
+  Globe,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -57,6 +58,7 @@ interface FileExplorerProps {
   onFileDeleted?: (fileId: string) => void;
   onFileRenamed?: (fileId: string, newName: string, newPath: string) => void;
   onFilesChanged?: () => void;
+  onPreviewFile?: (file: WorkspaceFileItem) => void;
   canEdit: boolean;
 }
 
@@ -106,6 +108,7 @@ export function FileExplorer({
   onFileDeleted,
   onFileRenamed,
   onFilesChanged,
+  onPreviewFile,
   canEdit,
 }: FileExplorerProps) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => {
@@ -357,7 +360,18 @@ export function FileExplorer({
                   <DropdownMenuTrigger className="flex size-5 items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer">
                     <MoreVertical className="size-3" />
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-32">
+                  <DropdownMenuContent align="end" className="w-36">
+                    {!isFolder &&
+                      (item.name.endsWith(".html") || item.name.endsWith(".htm")) &&
+                      onPreviewFile && (
+                        <DropdownMenuItem
+                          onClick={() => onPreviewFile(item)}
+                          className="text-primary font-medium focus:text-primary cursor-pointer"
+                        >
+                          <Globe className="mr-2 size-3.5 text-primary" />
+                          Live Preview
+                        </DropdownMenuItem>
+                      )}
                     {isFolder && (
                       <DropdownMenuItem
                         onClick={() => {

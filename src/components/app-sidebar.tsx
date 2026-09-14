@@ -8,7 +8,6 @@ import {
   ChevronUp,
   Code2,
   Compass,
-  Eye,
   FolderKanban,
   KanbanSquare,
   LayoutDashboard,
@@ -78,7 +77,6 @@ const mainNavigation = [
 
 const workspaceNavigation = [
   { title: "Code", href: "/workspace", icon: Code2 },
-  { title: "Live Preview", href: "/preview", icon: Eye },
   { title: "Deployments", href: "/deployments", icon: Rocket },
 ];
 
@@ -119,15 +117,17 @@ export function AppSidebar({ user }: AppSidebarProps) {
           item.href === "/"
             ? pathname === "/"
             : pathname === item.href ||
-              pathname.startsWith(`${item.href}/`);
+            pathname.startsWith(`${item.href}/`);
 
         return (
           <SidebarMenuItem key={item.href}>
             <SidebarMenuButton
-              isActive={active}
               tooltip={item.title}
               onClick={() => navigate(item.href)}
-              className="h-10 cursor-pointer rounded-lg px-3 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+              className={`h-10 cursor-pointer rounded-lg border px-3 transition-colors !bg-transparent ${active
+                ? "border-white/25"
+                : "border-transparent hover:border-white/25"
+                } group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0`}
             >
               <Icon className="size-4 shrink-0" />
 
@@ -140,6 +140,9 @@ export function AppSidebar({ user }: AppSidebarProps) {
       })}
     </SidebarMenu>
   );
+
+  const profileActive =
+    pathname === "/profile" || pathname.startsWith("/profile/");
 
   return (
     <Sidebar
@@ -210,7 +213,12 @@ export function AppSidebar({ user }: AppSidebarProps) {
         <SidebarMenu>
           <SidebarMenuItem>
             <DropdownMenu>
-              <DropdownMenuTrigger className="flex w-full cursor-pointer items-center gap-3 rounded-xl p-2 text-left text-sm outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:p-0">
+              <DropdownMenuTrigger
+                className={`flex w-full cursor-pointer items-center gap-3 rounded-xl border p-2 text-left text-sm outline-none transition-colors !bg-transparent ${profileActive
+                  ? "border-white/25"
+                  : "border-transparent hover:border-white/25"
+                  } group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:p-0`}
+              >
                 <Avatar className="size-9 shrink-0 rounded-lg">
                   <AvatarImage
                     src={user.image ?? undefined}
