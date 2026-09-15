@@ -31,7 +31,7 @@ export default async function WorkspaceRedirectPage() {
   });
 
   if (recentProject) {
-    redirect(`/projects/${recentProject.slug}`);
+    redirect(`/projects/${recentProject.slug}/code`);
   }
 
   // Fallback: If no projects created yet, redirect to Projects page

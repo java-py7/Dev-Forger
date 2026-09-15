@@ -622,9 +622,9 @@ export function IdeLayout({
           {/* Left section: Back button, project info */}
           <div className="flex items-center gap-2.5 min-w-0">
             <Link
-              href="/projects"
+              href={`/projects/${project.slug}`}
               className="flex size-8 items-center justify-center rounded-lg border bg-background hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-              title="Back to Projects"
+              title="Back to Project Workspace"
             >
               <ArrowLeft className="size-4" />
             </Link>

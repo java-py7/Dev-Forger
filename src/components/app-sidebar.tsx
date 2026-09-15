@@ -1,6 +1,6 @@
 "use client";
 
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { signOut } from "next-auth/react";
 
 import {
@@ -88,6 +88,7 @@ const secondaryNavigation = [
 export function AppSidebar({ user }: AppSidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const initials =
     user.name
@@ -112,12 +113,32 @@ export function AppSidebar({ user }: AppSidebarProps) {
     <SidebarMenu>
       {items.map((item) => {
         const Icon = item.icon;
+        const tab = searchParams.get("tab");
 
-        const active =
-          item.href === "/"
-            ? pathname === "/"
-            : pathname === item.href ||
+        let active = false;
+        if (item.href === "/") {
+          active = pathname === "/";
+        } else if (item.href === "/kanban") {
+          active =
+            pathname === "/kanban" ||
+            pathname.startsWith("/kanban/") ||
+            (pathname.startsWith("/projects/") && tab === "board");
+        } else if (item.href === "/projects") {
+          active =
+            (pathname === "/projects" ||
+              (pathname.startsWith("/projects/") && tab !== "board")) &&
+            !pathname.includes("/code") &&
+            !pathname.startsWith("/kanban");
+        } else if (item.href === "/workspace") {
+          active =
+            pathname === "/workspace" ||
+            pathname.startsWith("/workspace/") ||
+            pathname.includes("/code");
+        } else {
+          active =
+            pathname === item.href ||
             pathname.startsWith(`${item.href}/`);
+        }
 
         return (
           <SidebarMenuItem key={item.href}>

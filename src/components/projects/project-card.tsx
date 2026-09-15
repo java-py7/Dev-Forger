@@ -289,7 +289,7 @@ export function ProjectCard({ project, availableUsers, availableSkills = [] }: P
             )}
 
             <Link
-              href={`/projects/${project.slug}`}
+              href={`/projects/${project.slug}/code`}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium text-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
               title="Open DevForge Cloud IDE"
             >
