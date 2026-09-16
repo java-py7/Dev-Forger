@@ -8,6 +8,7 @@ import {
   ChevronUp,
   Code2,
   Compass,
+  FlaskConical,
   FolderKanban,
   KanbanSquare,
   LayoutDashboard,
@@ -77,6 +78,7 @@ const mainNavigation = [
 
 const workspaceNavigation = [
   { title: "Code", href: "/workspace", icon: Code2 },
+  { title: "Testing", href: "/testing", icon: FlaskConical },
   { title: "Deployments", href: "/deployments", icon: Rocket },
 ];
 
