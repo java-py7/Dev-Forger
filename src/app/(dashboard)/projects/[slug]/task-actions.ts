@@ -793,6 +793,8 @@ export async function moveTaskAction(
       return { success: false, error: "Target column does not exist on this board." };
     }
 
+    const isColumnChange = task.boardColumnId !== targetColumnId;
+
     await prisma.task.update({
       where: { id: taskId },
       data: {
@@ -800,6 +802,27 @@ export async function moveTaskAction(
         position: newPosition,
       },
     });
+
+    if (isColumnChange) {
+      // Notify assignee if someone else moved it; otherwise notify creator if someone else moved it
+      const recipientId =
+        task.assigneeId && task.assigneeId !== userId
+          ? task.assigneeId
+          : task.creatorId !== userId
+          ? task.creatorId
+          : null;
+
+      if (recipientId) {
+        await prisma.notification.create({
+          data: {
+            userId: recipientId,
+            type: "TASK_UPDATED",
+            title: "Task Updated",
+            message: `"${task.title}" was moved to ${targetColumn.name}.`,
+          },
+        });
+      }
+    }
 
     revalidatePath(`/projects/${slug}`);
 

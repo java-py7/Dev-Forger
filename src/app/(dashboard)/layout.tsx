@@ -21,11 +21,19 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
-  const profile = await prisma.profile.findUnique({
-    where: {
-      userId: session.user.id,
-    },
-  });
+  const [profile, unreadNotificationsCount] = await Promise.all([
+    prisma.profile.findUnique({
+      where: {
+        userId: session.user.id,
+      },
+    }),
+    prisma.notification.count({
+      where: {
+        userId: session.user.id,
+        read: false,
+      },
+    }),
+  ]);
 
   if (!profile) {
     redirect("/profile/setup");
@@ -40,6 +48,7 @@ export default async function DashboardLayout({
           email: session.user.email,
           image: session.user.image,
         }}
+        initialUnreadCount={unreadNotificationsCount}
       />
 
       <SidebarInset className="!m-0 !rounded-none !shadow-none">

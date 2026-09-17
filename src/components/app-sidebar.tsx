@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { signOut } from "next-auth/react";
 
@@ -65,6 +66,7 @@ type AppSidebarProps = {
     email?: string | null;
     image?: string | null;
   };
+  initialUnreadCount?: number;
 };
 
 const mainNavigation = [
@@ -87,10 +89,39 @@ const secondaryNavigation = [
   { title: "Settings", href: "/settings", icon: Settings },
 ];
 
-export function AppSidebar({ user }: AppSidebarProps) {
+export function AppSidebar({ user, initialUnreadCount = 0 }: AppSidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [unreadCount, setUnreadCount] = useState(initialUnreadCount);
+  const [prevCount, setPrevCount] = useState(initialUnreadCount);
+
+  // Synchronize state when server prop changes
+  if (initialUnreadCount !== prevCount) {
+    setPrevCount(initialUnreadCount);
+    setUnreadCount(initialUnreadCount);
+  }
+
+  // Listen to client-side real-time count updates
+  useEffect(() => {
+    const handleCountUpdate = (event: Event) => {
+      const customEvent = event as CustomEvent<{ unreadCount: number }>;
+      if (typeof customEvent.detail?.unreadCount === "number") {
+        setUnreadCount(customEvent.detail.unreadCount);
+      }
+    };
+
+    window.addEventListener(
+      "devforge:notification-count-update",
+      handleCountUpdate
+    );
+    return () => {
+      window.removeEventListener(
+        "devforge:notification-count-update",
+        handleCountUpdate
+      );
+    };
+  }, []);
 
   const initials =
     user.name
@@ -116,6 +147,7 @@ export function AppSidebar({ user }: AppSidebarProps) {
       {items.map((item) => {
         const Icon = item.icon;
         const tab = searchParams.get("tab");
+        const isNotifications = item.href === "/notifications";
 
         let active = false;
         if (item.href === "/") {
@@ -145,18 +177,36 @@ export function AppSidebar({ user }: AppSidebarProps) {
         return (
           <SidebarMenuItem key={item.href}>
             <SidebarMenuButton
-              tooltip={item.title}
+              tooltip={
+                isNotifications && unreadCount > 0
+                  ? `${item.title} (${unreadCount > 99 ? "99+" : unreadCount})`
+                  : item.title
+              }
               onClick={() => navigate(item.href)}
               className={`h-10 cursor-pointer rounded-lg border px-3 transition-colors !bg-transparent ${active
                 ? "border-white/25"
                 : "border-transparent hover:border-white/25"
                 } group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0`}
             >
-              <Icon className="size-4 shrink-0" />
+              <div className="relative flex shrink-0 items-center justify-center">
+                <Icon className="size-4 shrink-0" />
+                {isNotifications && unreadCount > 0 && (
+                  <span
+                    className="absolute -top-1 -right-1 size-2 rounded-full bg-primary ring-2 ring-sidebar"
+                    aria-hidden="true"
+                  />
+                )}
+              </div>
 
               <span className="group-data-[collapsible=icon]:hidden">
                 {item.title}
               </span>
+
+              {isNotifications && unreadCount > 0 && (
+                <span className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold text-primary group-data-[collapsible=icon]:hidden">
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              )}
             </SidebarMenuButton>
           </SidebarMenuItem>
         );
