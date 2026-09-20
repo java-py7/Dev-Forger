@@ -24,7 +24,7 @@ export default async function SettingsLayout({
       {/* Settings Header */}
       <div className="border-b">
         <div className="px-6 py-5 lg:px-8">
-          <div className="mx-auto max-w-5xl">
+          <div className="mx-auto max-w-8xl">
             <div className="flex items-center gap-3">
               <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-foreground text-background">
                 <Settings className="size-5" />
@@ -46,7 +46,7 @@ export default async function SettingsLayout({
 
       {/* Settings Content & Sidebar Layout */}
       <div className="px-6 py-6 lg:px-8">
-        <div className="mx-auto max-w-5xl">
+        <div className="mx-auto max-w-8xl">
           <div className="flex flex-col gap-8 md:flex-row md:items-start">
             {/* Side Navigation */}
             <aside className="w-full md:w-52 md:shrink-0">

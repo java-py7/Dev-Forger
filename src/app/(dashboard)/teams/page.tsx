@@ -117,7 +117,7 @@ export default async function TeamsPage() {
       {/* Header */}
       <div className="border-b">
         <div className="px-6 py-5 lg:px-8">
-          <div className="mx-auto max-w-6xl">
+          <div className="mx-auto max-w-8xl">
             <div className="flex items-center gap-3">
               <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground">
                 <Users className="size-5" />
@@ -139,7 +139,7 @@ export default async function TeamsPage() {
 
       {/* Content */}
       <div className="px-6 py-6 lg:px-8">
-        <div className="mx-auto max-w-6xl">
+        <div className="mx-auto max-w-8xl">
           <TeamList
             teams={teamData}
             availableUsers={availableUsers}

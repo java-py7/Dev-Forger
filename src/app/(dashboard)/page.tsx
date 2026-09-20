@@ -294,7 +294,7 @@ export default async function DashboardPage() {
 
   return (
     <main className="min-h-screen">
-      <div className="max-w-7xl mx-auto p-6 lg:p-8 space-y-8">
+      <div className="max-w-8xl mx-auto p-6 lg:p-8 space-y-8">
         {/* Top Greeting Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2">
           <div>

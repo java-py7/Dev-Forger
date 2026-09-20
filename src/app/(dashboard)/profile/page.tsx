@@ -158,7 +158,7 @@ export default async function ProfilePage() {
 
     const availability =
       availabilityValue === "BUSY" ||
-      availabilityValue === "NOT_AVAILABLE"
+        availabilityValue === "NOT_AVAILABLE"
         ? availabilityValue
         : "AVAILABLE";
 
@@ -168,7 +168,7 @@ export default async function ProfilePage() {
 
     const collaborationPreference =
       collaborationPreferenceValue === "TEAM" ||
-      collaborationPreferenceValue === "BOTH"
+        collaborationPreferenceValue === "BOTH"
         ? collaborationPreferenceValue
         : collaborationPreferenceValue === "INDIVIDUAL"
           ? "INDIVIDUAL"
@@ -180,8 +180,8 @@ export default async function ProfilePage() {
 
     const preferredProjectSize =
       preferredProjectSizeValue === "MEDIUM" ||
-      preferredProjectSizeValue === "LARGE" ||
-      preferredProjectSizeValue === "ANY"
+        preferredProjectSizeValue === "LARGE" ||
+        preferredProjectSizeValue === "ANY"
         ? preferredProjectSizeValue
         : preferredProjectSizeValue === "SMALL"
           ? "SMALL"
@@ -400,7 +400,7 @@ export default async function ProfilePage() {
 
   return (
     <main className="min-h-screen bg-background">
-      <div className="mx-auto w-full max-w-5xl px-6 py-10 lg:px-8">
+      <div className="mx-auto w-full max-w-8xl px-6 py-10 lg:px-8">
 
         {/* Header */}
         <div className="mb-10">
