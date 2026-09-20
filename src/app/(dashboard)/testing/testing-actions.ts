@@ -102,10 +102,10 @@ const IGNORED_DIRS = new Set([
 function scanDirectoryForTestFiles(dir: string, baseDir: string): TestSuiteItem[] {
   const suites: TestSuiteItem[] = [];
 
-  if (!fs.existsSync(dir)) return suites;
+  if (!fs.existsSync(/*turbopackIgnore: true*/ dir)) return suites;
 
   try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const entries = fs.readdirSync(/*turbopackIgnore: true*/ dir, { withFileTypes: true });
 
     for (const entry of entries) {
       if (entry.isDirectory()) {
@@ -128,11 +128,11 @@ function scanDirectoryForTestFiles(dir: string, baseDir: string): TestSuiteItem[
           let testsCount = 0;
 
           try {
-            const stats = fs.statSync(fullPath);
+            const stats = fs.statSync(/*turbopackIgnore: true*/ fullPath);
             size = stats.size;
             mtime = stats.mtime;
 
-            const content = fs.readFileSync(fullPath, "utf8");
+            const content = fs.readFileSync(/*turbopackIgnore: true*/ fullPath, "utf8");
             const testMatches = content.match(/\b(test|it)\s*\(/g);
             testsCount = testMatches ? testMatches.length : 1;
           } catch {
@@ -165,7 +165,7 @@ function detectTestConfiguration(dir: string): {
 } {
   const pkgPath = path.join(dir, "package.json");
 
-  if (!fs.existsSync(pkgPath)) {
+  if (!fs.existsSync(/*turbopackIgnore: true*/ pkgPath)) {
     return {
       isConfigured: false,
       framework: null,
@@ -174,7 +174,7 @@ function detectTestConfiguration(dir: string): {
   }
 
   try {
-    const raw = fs.readFileSync(pkgPath, "utf8");
+    const raw = fs.readFileSync(/*turbopackIgnore: true*/ pkgPath, "utf8");
     const pkg = JSON.parse(raw) as {
       scripts?: Record<string, string>;
       dependencies?: Record<string, string>;

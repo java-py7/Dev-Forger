@@ -202,7 +202,7 @@ type Props = {
 export async function GET(req: NextRequest, { params }: Props) {
   const { slug, path: pathSegments } = await params;
 
-  // Query project and files from database
+  // Query project and files directly from Prisma database
   const project = await prisma.project.findUnique({
     where: { slug },
     include: {
@@ -302,59 +302,7 @@ export async function GET(req: NextRequest, { params }: Props) {
     });
   }
 
-  // 4. In local development only: check local disk if available
-  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
-    try {
-      const fs = await import("fs");
-      const diskDir = path.resolve(process.cwd(), "workspaces", slug);
-
-      if (fs.existsSync(/*turbopackIgnore: true*/ diskDir)) {
-        let diskPath = path.resolve(diskDir, cleanTarget);
-        if (
-          diskPath.startsWith(diskDir) &&
-          fs.existsSync(/*turbopackIgnore: true*/ diskPath)
-        ) {
-          if (fs.statSync(/*turbopackIgnore: true*/ diskPath).isDirectory()) {
-            diskPath = path.join(diskPath, "index.html");
-          }
-
-          if (fs.existsSync(/*turbopackIgnore: true*/ diskPath)) {
-            const ext = path.extname(diskPath).toLowerCase();
-            const contentType = MIME_TYPES[ext] || "application/octet-stream";
-
-            if (ext === ".html" || ext === ".htm") {
-              let html = fs.readFileSync(/*turbopackIgnore: true*/ diskPath, "utf8");
-              if (html.includes("</body>")) {
-                html = html.replace("</body>", `${INJECTED_BRIDGE_SCRIPT}\n</body>`);
-              } else {
-                html = `${html}\n${INJECTED_BRIDGE_SCRIPT}`;
-              }
-              return new Response(html, {
-                status: 200,
-                headers: {
-                  "Content-Type": contentType,
-                  "Cache-Control": "no-cache, no-store, must-revalidate",
-                  "Access-Control-Allow-Origin": "*",
-                },
-              });
-            }
-
-            const buf = fs.readFileSync(/*turbopackIgnore: true*/ diskPath);
-            return new Response(buf, {
-              status: 200,
-              headers: {
-                "Content-Type": contentType,
-                "Cache-Control": "public, max-age=60",
-                "Access-Control-Allow-Origin": "*",
-              },
-            });
-          }
-        }
-      }
-    } catch {}
-  }
-
-  // 5. If requesting HTML or root and nothing matched, serve friendly placeholder
+  // 4. If requesting HTML or root and nothing matched, serve friendly placeholder
   const requestedExt = path.extname(cleanTarget).toLowerCase();
   if (!requestedExt || requestedExt === ".html" || requestedExt === ".htm") {
     const notFoundHtml = getFriendlyNotFoundHtml(slug, relativeFilePath);
