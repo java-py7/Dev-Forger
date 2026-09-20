@@ -1,9 +1,7 @@
 import { NextRequest } from "next/server";
-import fs from "fs";
 import path from "path";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { getProjectWorkspaceDir, WORKSPACES_ROOT } from "@/server/workspace-manager";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -98,153 +96,146 @@ const INJECTED_BRIDGE_SCRIPT = `
 </script>
 `;
 
-function getFriendlyNotFoundHtml(slug: string, attemptedPath: string): string {
+function getFriendlyNotFoundHtml(projectSlug: string, requestedFile: string) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DevForge Live Preview - ${slug}</title>
-  ${INJECTED_BRIDGE_SCRIPT}
+  <title>Live Preview - ${projectSlug}</title>
   <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: #090d16;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #080b11;
       color: #f1f5f9;
       display: flex;
-      flex-direction: column;
       align-items: center;
       justify-content: center;
       min-height: 100vh;
-      margin: 0;
       padding: 24px;
-      box-sizing: border-box;
-      text-align: center;
     }
     .card {
-      background: rgba(30, 41, 59, 0.55);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 16px;
-      padding: 32px 28px;
       max-width: 480px;
-      backdrop-filter: blur(14px);
-      box-shadow: 0 20px 30px -5px rgba(0, 0, 0, 0.6);
+      width: 100%;
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 32px;
+      text-align: center;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
     }
-    .badge {
+    .icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: rgba(56, 189, 248, 0.1);
+      color: #38bdf8;
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      background: rgba(56, 189, 248, 0.12);
-      color: #38bdf8;
-      font-size: 12px;
-      font-weight: 600;
-      padding: 4px 12px;
-      border-radius: 9999px;
+      justify-content: center;
       margin-bottom: 16px;
-      border: 1px solid rgba(56, 189, 248, 0.25);
     }
-    h1 {
-      font-size: 20px;
-      font-weight: 700;
-      margin: 0 0 10px;
-      color: #ffffff;
-    }
-    p {
-      font-size: 13px;
-      line-height: 1.6;
-      color: #94a3b8;
-      margin: 0 0 16px;
-    }
-    code {
-      background: #0f172a;
-      color: #38bdf8;
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-family: monospace;
+    h2 { font-size: 18px; font-weight: 600; margin-bottom: 8px; color: #f8fafc; }
+    p { font-size: 13px; color: #94a3b8; line-height: 1.5; margin-bottom: 20px; }
+    .code-box {
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 12px;
+      color: #38bdf8;
+      text-align: left;
+      margin-bottom: 20px;
+      overflow-x: auto;
     }
     .btn {
-      background: #38bdf8;
-      color: #04131f;
-      font-weight: 700;
+      display: inline-block;
+      background: #0284c7;
+      color: #fff;
       font-size: 13px;
-      padding: 10px 20px;
-      border-radius: 8px;
-      border: none;
+      font-weight: 500;
+      padding: 8px 16px;
+      border-radius: 6px;
+      text-decoration: none;
       cursor: pointer;
-      box-shadow: 0 4px 14px rgba(56, 189, 248, 0.35);
-      transition: all 0.2s ease;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
+      border: none;
+      transition: background 0.2s;
     }
-    .btn:hover {
-      background: #7dd3fc;
-      transform: translateY(-1px);
-    }
-    .hint {
-      font-size: 11px;
-      color: #64748b;
-      margin-top: 18px;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
-      padding-top: 14px;
-    }
+    .btn:hover { background: #0369a1; }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="badge">🌐 DevForge Live Preview</div>
-    <h1>Ready for Live Preview</h1>
-    <p>No <code>${attemptedPath || "index.html"}</code> file was detected in <code>${slug}</code> yet.</p>
-    <p>Click below to generate a modern starter website template directly in your workspace:</p>
-    <div>
-      <button
-        type="button"
-        class="btn"
-        onclick="if(window.parent && window.parent !== window){window.parent.postMessage({type:'DEVFORGE_CREATE_STARTER'},'*');}"
-      >
-        ✨ Generate Starter Website (HTML, CSS, JS)
-      </button>
+    <div class="icon">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="12" y1="8" x2="12" y2="12"></line>
+        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+      </svg>
     </div>
-    <div class="hint">
-      Tip: For backend/Node/Python scripts, use the <strong>Run</strong> button above to view output in the Console.
+    <h2>No HTML file ready to preview</h2>
+    <p>Live Preview serves HTML, CSS, and web assets from your project workspace. Create an <code>index.html</code> file in your workspace to render here.</p>
+    <div class="code-box">
+&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+  &lt;body&gt;
+    &lt;h1&gt;Hello DevForge!&lt;/h1&gt;
+  &lt;/body&gt;
+&lt;/html&gt;
     </div>
+    <button class="btn" onclick="window.location.reload()">Refresh Preview</button>
   </div>
+  ${INJECTED_BRIDGE_SCRIPT}
 </body>
 </html>`;
 }
 
-type RouteContext = {
+type Props = {
   params: Promise<{
     slug: string;
     path?: string[];
   }>;
 };
 
-export async function GET(request: NextRequest, { params }: RouteContext) {
+export async function GET(req: NextRequest, { params }: Props) {
   const { slug, path: pathSegments } = await params;
 
-  if (!slug) {
-    return new Response("Missing project slug", { status: 400 });
-  }
-
-  // Find project in database
+  // Query project and files from database
   const project = await prisma.project.findUnique({
     where: { slug },
     include: {
-      members: true,
+      members: {
+        select: { userId: true },
+      },
+      workspace: {
+        include: {
+          files: {
+            select: {
+              id: true,
+              name: true,
+              path: true,
+              type: true,
+              content: true,
+            },
+          },
+        },
+      },
     },
   });
 
   if (!project) {
-    return new Response("Project not found", { status: 404 });
+    return new Response(`Project not found: ${slug}`, { status: 404 });
   }
 
-  // Check authorization if project is private
-  if (project.visibility === "PRIVATE") {
+  // Check access permissions for private projects
+  if (project.visibility !== "PUBLIC") {
     const session = await auth();
     if (!session?.user?.id) {
-      return new Response("Unauthorized to view private project preview", { status: 401 });
+      return new Response("Unauthorized: Please sign in to view private preview", {
+        status: 401,
+      });
     }
 
     const userId = session.user.id;
@@ -256,17 +247,6 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     }
   }
 
-  // Resolve directory on disk (safely)
-  let workspaceDir = "";
-  try {
-    workspaceDir = getProjectWorkspaceDir(slug);
-    if (!fs.existsSync(workspaceDir)) {
-      fs.mkdirSync(workspaceDir, { recursive: true });
-    }
-  } catch {
-    workspaceDir = "";
-  }
-
   // Resolve target file path
   const relativeSegments = Array.isArray(pathSegments) ? pathSegments : [];
   let relativeFilePath = relativeSegments.join("/");
@@ -276,147 +256,116 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     relativeFilePath = "index.html";
   }
 
-  let finalPath = "";
-  if (workspaceDir) {
-    const resolvedTarget = path.resolve(workspaceDir, relativeFilePath);
-    if (resolvedTarget.startsWith(workspaceDir)) {
-      finalPath = resolvedTarget;
-    }
+  const cleanTarget = relativeFilePath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const workspaceFiles = project.workspace?.files || [];
+
+  // 1. Direct match in database workspace files
+  let targetFile = workspaceFiles.find(
+    (f) => f.path.replace(/\\/g, "/").toLowerCase() === cleanTarget.toLowerCase()
+  );
+
+  // 2. If not found and no extension, try matching with .html extension
+  if (!targetFile && !path.extname(cleanTarget)) {
+    targetFile = workspaceFiles.find(
+      (f) => f.path.replace(/\\/g, "/").toLowerCase() === `${cleanTarget}.html`.toLowerCase()
+    );
   }
 
-  // If path is a directory, look for index.html inside
-  if (finalPath && fs.existsSync(finalPath) && fs.statSync(finalPath).isDirectory()) {
-    finalPath = path.join(finalPath, "index.html");
+  // 3. If index.html was requested but not found, try ANY .html file in the workspace
+  if (!targetFile && (cleanTarget === "index.html" || cleanTarget === "")) {
+    targetFile = workspaceFiles.find((f) => f.path.toLowerCase().endsWith(".html"));
   }
 
-  // If file does not exist directly on disk, try adding .html extension
-  if (finalPath && !fs.existsSync(finalPath)) {
-    if (fs.existsSync(finalPath + ".html")) {
-      finalPath = finalPath + ".html";
-    }
-  }
+  // If found in database, serve content directly
+  if (targetFile && targetFile.content !== null) {
+    let content = targetFile.content;
+    const ext = path.extname(targetFile.path).toLowerCase();
+    const contentType = MIME_TYPES[ext] || "text/plain; charset=utf-8";
 
-  // If still not found on disk, check database fallback
-  if (!finalPath || !fs.existsSync(finalPath) || fs.statSync(finalPath).isDirectory()) {
-    try {
-      const dbFile = await prisma.workspaceFile.findFirst({
-        where: {
-          workspace: { projectId: project.id },
-          path: relativeFilePath,
-        },
-      });
-
-      if (dbFile && dbFile.content !== null) {
-        let content = dbFile.content;
-        const fileExt = path.extname(relativeFilePath).toLowerCase();
-        const contentType = MIME_TYPES[fileExt] || "text/plain; charset=utf-8";
-
-        if (fileExt === ".html" || fileExt === ".htm") {
-          if (content.includes("</body>")) {
-            content = content.replace("</body>", `${INJECTED_BRIDGE_SCRIPT}\n</body>`);
-          } else if (content.includes("</html>")) {
-            content = content.replace("</html>", `${INJECTED_BRIDGE_SCRIPT}\n</html>`);
-          } else {
-            content = `${content}\n${INJECTED_BRIDGE_SCRIPT}`;
-          }
-        }
-
-        return new Response(content, {
-          status: 200,
-          headers: {
-            "Content-Type": contentType,
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-          },
-        });
-      }
-
-      // If index.html was requested but not found, check if ANY HTML file exists in the workspace
-      if (relativeFilePath === "index.html") {
-        const anyHtmlFile = await prisma.workspaceFile.findFirst({
-          where: {
-            workspace: { projectId: project.id },
-            type: "FILE",
-            path: { endsWith: ".html" },
-          },
-        });
-
-        if (anyHtmlFile && anyHtmlFile.content !== null) {
-          let content = anyHtmlFile.content;
-          if (content.includes("</body>")) {
-            content = content.replace("</body>", `${INJECTED_BRIDGE_SCRIPT}\n</body>`);
-          } else if (content.includes("</html>")) {
-            content = content.replace("</html>", `${INJECTED_BRIDGE_SCRIPT}\n</html>`);
-          } else {
-            content = `${content}\n${INJECTED_BRIDGE_SCRIPT}`;
-          }
-
-          return new Response(content, {
-            status: 200,
-            headers: {
-              "Content-Type": "text/html; charset=utf-8",
-              "Cache-Control": "no-cache, no-store, must-revalidate",
-            },
-          });
-        }
-      }
-    } catch (err) {
-      console.warn("[Workspace Preview API] DB lookup error:", err);
-    }
-
-    // If requesting HTML or root, serve friendly placeholder with status 200 to prevent console 404s
-    const ext = path.extname(relativeFilePath).toLowerCase();
-    if (!ext || ext === ".html" || ext === ".htm") {
-      const notFoundHtml = getFriendlyNotFoundHtml(slug, relativeFilePath);
-      return new Response(notFoundHtml, {
-        status: 200,
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-cache, no-store, must-revalidate",
-        },
-      });
-    }
-
-    return new Response(`File not found: ${relativeFilePath}`, { status: 404 });
-  }
-
-  const ext = path.extname(finalPath).toLowerCase();
-  const contentType = MIME_TYPES[ext] || "application/octet-stream";
-
-  try {
-    // Handle HTML files: inject bridge script
     if (ext === ".html" || ext === ".htm") {
-      let htmlContent = fs.readFileSync(finalPath, "utf8");
-
-      if (htmlContent.includes("</body>")) {
-        htmlContent = htmlContent.replace("</body>", `${INJECTED_BRIDGE_SCRIPT}\n</body>`);
-      } else if (htmlContent.includes("</html>")) {
-        htmlContent = htmlContent.replace("</html>", `${INJECTED_BRIDGE_SCRIPT}\n</html>`);
+      if (content.includes("</body>")) {
+        content = content.replace("</body>", `${INJECTED_BRIDGE_SCRIPT}\n</body>`);
+      } else if (content.includes("</html>")) {
+        content = content.replace("</html>", `${INJECTED_BRIDGE_SCRIPT}\n</html>`);
       } else {
-        htmlContent = `${htmlContent}\n${INJECTED_BRIDGE_SCRIPT}`;
+        content = `${content}\n${INJECTED_BRIDGE_SCRIPT}`;
       }
-
-      return new Response(htmlContent, {
-        status: 200,
-        headers: {
-          "Content-Type": contentType,
-          "Cache-Control": "no-cache, no-store, must-revalidate",
-          "Access-Control-Allow-Origin": "*",
-        },
-      });
     }
 
-    // Binary / other static files
-    const fileBuffer = fs.readFileSync(finalPath);
-    return new Response(fileBuffer, {
+    return new Response(content, {
       status: 200,
       headers: {
         "Content-Type": contentType,
-        "Cache-Control": "public, max-age=60",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
         "Access-Control-Allow-Origin": "*",
       },
     });
-  } catch (err: any) {
-    console.error("[Workspace Preview API] Error serving file:", err);
-    return new Response(`Server error serving file: ${err.message}`, { status: 500 });
   }
+
+  // 4. In local development only: check local disk if available
+  if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+    try {
+      const fs = await import("fs");
+      const diskDir = path.resolve(process.cwd(), "workspaces", slug);
+
+      if (fs.existsSync(/*turbopackIgnore: true*/ diskDir)) {
+        let diskPath = path.resolve(diskDir, cleanTarget);
+        if (
+          diskPath.startsWith(diskDir) &&
+          fs.existsSync(/*turbopackIgnore: true*/ diskPath)
+        ) {
+          if (fs.statSync(/*turbopackIgnore: true*/ diskPath).isDirectory()) {
+            diskPath = path.join(diskPath, "index.html");
+          }
+
+          if (fs.existsSync(/*turbopackIgnore: true*/ diskPath)) {
+            const ext = path.extname(diskPath).toLowerCase();
+            const contentType = MIME_TYPES[ext] || "application/octet-stream";
+
+            if (ext === ".html" || ext === ".htm") {
+              let html = fs.readFileSync(/*turbopackIgnore: true*/ diskPath, "utf8");
+              if (html.includes("</body>")) {
+                html = html.replace("</body>", `${INJECTED_BRIDGE_SCRIPT}\n</body>`);
+              } else {
+                html = `${html}\n${INJECTED_BRIDGE_SCRIPT}`;
+              }
+              return new Response(html, {
+                status: 200,
+                headers: {
+                  "Content-Type": contentType,
+                  "Cache-Control": "no-cache, no-store, must-revalidate",
+                  "Access-Control-Allow-Origin": "*",
+                },
+              });
+            }
+
+            const buf = fs.readFileSync(/*turbopackIgnore: true*/ diskPath);
+            return new Response(buf, {
+              status: 200,
+              headers: {
+                "Content-Type": contentType,
+                "Cache-Control": "public, max-age=60",
+                "Access-Control-Allow-Origin": "*",
+              },
+            });
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 5. If requesting HTML or root and nothing matched, serve friendly placeholder
+  const requestedExt = path.extname(cleanTarget).toLowerCase();
+  if (!requestedExt || requestedExt === ".html" || requestedExt === ".htm") {
+    const notFoundHtml = getFriendlyNotFoundHtml(slug, relativeFilePath);
+    return new Response(notFoundHtml, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+      },
+    });
+  }
+
+  return new Response(`File not found: ${relativeFilePath}`, { status: 404 });
 }
