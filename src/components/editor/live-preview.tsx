@@ -146,6 +146,8 @@ export function LivePreview({
     }
   }, [mode, workspacePath, serverUrl]);
 
+  const handleCreateStarterWebsiteRef = useRef<() => void>(() => {});
+
   // Listen to postMessage logs and events from the previewed iframe
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -164,6 +166,8 @@ export function LivePreview({
         ]);
       } else if (event.data.type === "DEVFORGE_PREVIEW_READY") {
         setIsLoading(false);
+      } else if (event.data.type === "DEVFORGE_CREATE_STARTER") {
+        handleCreateStarterWebsiteRef.current();
       }
     };
 
@@ -576,6 +580,7 @@ if (colorBtn) {
       setIsCreatingStarter(false);
     }
   };
+  handleCreateStarterWebsiteRef.current = handleCreateStarterWebsite;
 
   return (
     <TooltipProvider>
@@ -868,7 +873,7 @@ if (colorBtn) {
               ref={iframeRef}
               src={activeSrc}
               title="DevForge Website Live Preview"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups"
+              sandbox="allow-scripts allow-forms allow-modals allow-popups"
               className="h-full w-full border-0 bg-white"
               onLoad={() => setIsLoading(false)}
             />

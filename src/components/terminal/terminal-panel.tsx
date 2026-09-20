@@ -55,7 +55,15 @@ export function TerminalPanel({
   detectedServers = [],
   onOpenPreview,
 }: TerminalPanelProps) {
-  const [activeTab, setActiveTab] = useState<"output" | "terminal" | "problems">("terminal");
+  const [activeTab, setActiveTab] = useState<"output" | "terminal" | "problems">(() => {
+    if (typeof window !== "undefined") {
+      const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+      if (!isLocalhost && !process.env.NEXT_PUBLIC_TERMINAL_WS_URL) {
+        return "output";
+      }
+    }
+    return "terminal";
+  });
   const [isExpandedFull, setIsExpandedFull] = useState(false);
   const [terminalStatus, setTerminalStatus] = useState<
     "connecting" | "connected" | "disconnected" | "error"
@@ -63,6 +71,13 @@ export function TerminalPanel({
 
   const logEndRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTermTerminalHandle>(null);
+
+  // Automatically switch to output tab when code execution begins
+  useEffect(() => {
+    if (isRunning) {
+      setActiveTab("output");
+    }
+  }, [isRunning]);
 
   useEffect(() => {
     if (isOpen && activeTab === "output") {

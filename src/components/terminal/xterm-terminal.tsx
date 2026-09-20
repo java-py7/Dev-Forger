@@ -254,12 +254,45 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
 
         if (seq !== connectionSeqRef.current) return;
 
-        // Determine WebSocket URL
+        // Determine WebSocket URL safely
+        const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
         const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
-        const resolvedWsUrl =
-          wsUrl ||
-          process.env.NEXT_PUBLIC_TERMINAL_WS_URL ||
-          `ws://${host}:3001`;
+        const isLocalhost = host === "localhost" || host === "127.0.0.1";
+
+        let resolvedWsUrl: string | null = wsUrl || process.env.NEXT_PUBLIC_TERMINAL_WS_URL || null;
+
+        if (!resolvedWsUrl) {
+          if (isLocalhost) {
+            resolvedWsUrl = `ws://${host}:3001`;
+          } else {
+            // In cloud/serverless deployments without an external terminal server,
+            // avoid attempting ws://${host}:3001 which causes Mixed Content security blocks over HTTPS.
+            resolvedWsUrl = null;
+          }
+        } else if (isHttps && resolvedWsUrl.startsWith("ws://")) {
+          // Upgrade to secure WebSocket protocol if on HTTPS to prevent Mixed Content
+          resolvedWsUrl = resolvedWsUrl.replace(/^ws:\/\//, "wss://");
+        }
+
+        // If no viable WebSocket endpoint exists (serverless cloud deployment)
+        if (!resolvedWsUrl) {
+          updateStatus("disconnected");
+          setErrorMessage("Serverless Mode: Cloud shell runs code via the Run button and Output tab.");
+
+          term.clear();
+          term.write("\r\n\x1b[1;38;5;45m╭──────────────────────────────────────────────────────────────────────────╮\x1b[0m\r\n");
+          term.write("\x1b[1;38;5;45m│\x1b[0m  \x1b[1;37mDevForge Cloud Shell\x1b[0m \x1b[90m[Serverless Runtime]\x1b[0m                               \x1b[1;38;5;45m│\x1b[0m\r\n");
+          term.write("\x1b[1;38;5;45m╰──────────────────────────────────────────────────────────────────────────╯\x1b[0m\r\n\r\n");
+          term.write("\x1b[38;5;220m⚡ Serverless Environment Active\x1b[0m\r\n");
+          term.write("  • Click the \x1b[1;32mRun\x1b[0m button in the top toolbar to execute your code.\r\n");
+          term.write("  • Switch to the \x1b[1;36mOutput\x1b[0m tab to view real-time console execution logs.\r\n");
+          term.write("  • Switch to \x1b[1;35mLive Preview\x1b[0m (top right) to inspect web interfaces.\r\n\r\n");
+          term.write("\x1b[90m────────────────────────────────────────────────────────────────────────────\x1b[0m\r\n");
+          term.write("\x1b[90mTip: To connect an interactive bash/zsh shell in production,\x1b[0m\r\n");
+          term.write("\x1b[90mdeploy DevForge terminal-server and configure environment variable:\x1b[0m\r\n");
+          term.write("\x1b[38;5;75mNEXT_PUBLIC_TERMINAL_WS_URL=wss://your-terminal-server.com\x1b[0m\r\n\r\n");
+          return;
+        }
 
         const params = new URLSearchParams();
         if (term.cols) params.set("cols", String(term.cols));
@@ -280,7 +313,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
                 ws.close();
               } catch {}
               updateStatus("error");
-              setErrorMessage("Connection to terminal server timed out. Make sure the server is running on port 3001.");
+              setErrorMessage("Connection to terminal server timed out. Please verify the terminal service.");
             }
           }, 8000);
 
@@ -506,7 +539,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
           </div>
         )}
 
-        {(status === "disconnected" || status === "error") && (
+        {status === "error" && (
           <div className="absolute inset-0 flex items-center justify-center bg-[#080b11]/90 backdrop-blur-xs z-10">
             <div className="flex flex-col items-center gap-2 text-center p-4 max-w-sm rounded-lg border border-border bg-card/40">
               <AlertCircle className="size-5 text-destructive" />
@@ -514,7 +547,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
                 {errorMessage || "Terminal session disconnected"}
               </p>
               <p className="text-[11px] text-muted-foreground">
-                Make sure the terminal WebSocket server is active on port 3001.
+                Please verify that the terminal service is reachable or check NEXT_PUBLIC_TERMINAL_WS_URL.
               </p>
               <Button
                 type="button"

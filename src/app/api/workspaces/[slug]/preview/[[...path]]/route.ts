@@ -103,7 +103,9 @@ function getFriendlyNotFoundHtml(slug: string, attemptedPath: string): string {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>DevForge Live Preview - Not Found</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DevForge Live Preview - ${slug}</title>
+  ${INJECTED_BRIDGE_SCRIPT}
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -120,38 +122,38 @@ function getFriendlyNotFoundHtml(slug: string, attemptedPath: string): string {
       text-align: center;
     }
     .card {
-      background: rgba(30, 41, 59, 0.5);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(30, 41, 59, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 16px;
-      padding: 32px;
+      padding: 32px 28px;
       max-width: 480px;
-      backdrop-filter: blur(12px);
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 20px 30px -5px rgba(0, 0, 0, 0.6);
     }
     .badge {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      background: rgba(56, 189, 248, 0.1);
+      background: rgba(56, 189, 248, 0.12);
       color: #38bdf8;
       font-size: 12px;
       font-weight: 600;
-      padding: 4px 10px;
+      padding: 4px 12px;
       border-radius: 9999px;
       margin-bottom: 16px;
-      border: 1px solid rgba(56, 189, 248, 0.2);
+      border: 1px solid rgba(56, 189, 248, 0.25);
     }
     h1 {
-      font-size: 22px;
+      font-size: 20px;
       font-weight: 700;
-      margin: 0 0 12px;
+      margin: 0 0 10px;
       color: #ffffff;
     }
     p {
-      font-size: 14px;
+      font-size: 13px;
       line-height: 1.6;
       color: #94a3b8;
-      margin: 0 0 20px;
+      margin: 0 0 16px;
     }
     code {
       background: #0f172a;
@@ -159,25 +161,53 @@ function getFriendlyNotFoundHtml(slug: string, attemptedPath: string): string {
       padding: 2px 6px;
       border-radius: 4px;
       font-family: monospace;
+      font-size: 12px;
+    }
+    .btn {
+      background: #38bdf8;
+      color: #04131f;
+      font-weight: 700;
       font-size: 13px;
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(56, 189, 248, 0.35);
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:hover {
+      background: #7dd3fc;
+      transform: translateY(-1px);
     }
     .hint {
-      font-size: 12px;
+      font-size: 11px;
       color: #64748b;
-      margin-top: 16px;
-      border-top: 1px solid rgba(255, 255, 255, 0.06);
-      padding-top: 16px;
+      margin-top: 18px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      padding-top: 14px;
     }
   </style>
 </head>
 <body>
   <div class="card">
     <div class="badge">🌐 DevForge Live Preview</div>
-    <h1>No HTML file found</h1>
-    <p>We could not find <code>${attemptedPath || "index.html"}</code> in project <code>${slug}</code>.</p>
-    <p>Create an <code>index.html</code> file in your project workspace to start seeing live updates as you code!</p>
+    <h1>Ready for Live Preview</h1>
+    <p>No <code>${attemptedPath || "index.html"}</code> file was detected in <code>${slug}</code> yet.</p>
+    <p>Click below to generate a modern starter website template directly in your workspace:</p>
+    <div>
+      <button
+        type="button"
+        class="btn"
+        onclick="if(window.parent && window.parent !== window){window.parent.postMessage({type:'DEVFORGE_CREATE_STARTER'},'*');}"
+      >
+        ✨ Generate Starter Website (HTML, CSS, JS)
+      </button>
+    </div>
     <div class="hint">
-      Tip: Click "Run" or save your file to refresh the preview automatically.
+      Tip: For backend/Node/Python scripts, use the <strong>Run</strong> button above to view output in the Console.
     </div>
   </div>
 </body>
@@ -226,16 +256,15 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     }
   }
 
-  // Resolve directory on disk
+  // Resolve directory on disk (safely)
   let workspaceDir = "";
   try {
     workspaceDir = getProjectWorkspaceDir(slug);
+    if (!fs.existsSync(workspaceDir)) {
+      fs.mkdirSync(workspaceDir, { recursive: true });
+    }
   } catch {
-    return new Response("Invalid workspace directory", { status: 400 });
-  }
-
-  if (!fs.existsSync(workspaceDir)) {
-    return new Response("Workspace directory does not exist on disk", { status: 404 });
+    workspaceDir = "";
   }
 
   // Resolve target file path
@@ -247,28 +276,28 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     relativeFilePath = "index.html";
   }
 
-  // Prevent path traversal
-  const resolvedTarget = path.resolve(workspaceDir, relativeFilePath);
-  if (!resolvedTarget.startsWith(workspaceDir)) {
-    return new Response("Access denied: Directory traversal detected", { status: 403 });
+  let finalPath = "";
+  if (workspaceDir) {
+    const resolvedTarget = path.resolve(workspaceDir, relativeFilePath);
+    if (resolvedTarget.startsWith(workspaceDir)) {
+      finalPath = resolvedTarget;
+    }
   }
 
-  let finalPath = resolvedTarget;
-
   // If path is a directory, look for index.html inside
-  if (fs.existsSync(finalPath) && fs.statSync(finalPath).isDirectory()) {
+  if (finalPath && fs.existsSync(finalPath) && fs.statSync(finalPath).isDirectory()) {
     finalPath = path.join(finalPath, "index.html");
   }
 
-  // If file does not exist directly, try adding .html extension
-  if (!fs.existsSync(finalPath)) {
+  // If file does not exist directly on disk, try adding .html extension
+  if (finalPath && !fs.existsSync(finalPath)) {
     if (fs.existsSync(finalPath + ".html")) {
       finalPath = finalPath + ".html";
     }
   }
 
   // If still not found on disk, check database fallback
-  if (!fs.existsSync(finalPath) || fs.statSync(finalPath).isDirectory()) {
+  if (!finalPath || !fs.existsSync(finalPath) || fs.statSync(finalPath).isDirectory()) {
     try {
       const dbFile = await prisma.workspaceFile.findFirst({
         where: {
@@ -300,14 +329,46 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
           },
         });
       }
-    } catch {}
 
-    // If requesting HTML or root, serve friendly placeholder
+      // If index.html was requested but not found, check if ANY HTML file exists in the workspace
+      if (relativeFilePath === "index.html") {
+        const anyHtmlFile = await prisma.workspaceFile.findFirst({
+          where: {
+            workspace: { projectId: project.id },
+            type: "FILE",
+            path: { endsWith: ".html" },
+          },
+        });
+
+        if (anyHtmlFile && anyHtmlFile.content !== null) {
+          let content = anyHtmlFile.content;
+          if (content.includes("</body>")) {
+            content = content.replace("</body>", `${INJECTED_BRIDGE_SCRIPT}\n</body>`);
+          } else if (content.includes("</html>")) {
+            content = content.replace("</html>", `${INJECTED_BRIDGE_SCRIPT}\n</html>`);
+          } else {
+            content = `${content}\n${INJECTED_BRIDGE_SCRIPT}`;
+          }
+
+          return new Response(content, {
+            status: 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "no-cache, no-store, must-revalidate",
+            },
+          });
+        }
+      }
+    } catch (err) {
+      console.warn("[Workspace Preview API] DB lookup error:", err);
+    }
+
+    // If requesting HTML or root, serve friendly placeholder with status 200 to prevent console 404s
     const ext = path.extname(relativeFilePath).toLowerCase();
     if (!ext || ext === ".html" || ext === ".htm") {
       const notFoundHtml = getFriendlyNotFoundHtml(slug, relativeFilePath);
       return new Response(notFoundHtml, {
-        status: 404,
+        status: 200,
         headers: {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-cache, no-store, must-revalidate",
