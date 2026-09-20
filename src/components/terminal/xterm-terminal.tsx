@@ -4,13 +4,15 @@ import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallba
 import "@xterm/xterm/css/xterm.css";
 import { Loader2, RefreshCw, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { getTerminalTicketAction } from "@/app/(dashboard)/projects/[slug]/workspace-actions";
 
 export interface XTermTerminalHandle {
   clear: () => void;
   reconnect: () => void;
   restart: () => void;
   focus: () => void;
+  sendInput: (data: string) => void;
+  syncFile: (path: string, content: string) => void;
+  isConnected: () => boolean;
 }
 
 // Maximum bytes to keep in the replay buffer (2 MB)
@@ -85,7 +87,9 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
       }
 
       // Match lines like "listening on port 8080" or "port 8080"
-      const portMatches = clean.matchAll(/(?:listening|running|ready)\s+(?:at|on|port)?\s*(?:port\s*)?:?(\d{3,5})/gi);
+      const portMatches = clean.matchAll(
+        /(?:listening|running|ready)\s+(?:at|on|port)?\s*(?:port\s*)?:?(\d{3,5})/gi
+      );
       for (const m of portMatches) {
         const port = parseInt(m[1], 10);
         if (port > 0 && port < 65536 && port !== 3001) {
@@ -171,8 +175,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
         containerRef.current.innerHTML = "";
         term.open(containerRef.current);
 
-        // Forward keystrokes strictly through the active WebSocket reference.
-        // Attaching this ONCE prevents any possibility of double or triple keystrokes.
+        // Forward keystrokes strictly through the active WebSocket reference
         term.onData((data: string) => {
           if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
             socketRef.current.send(JSON.stringify({ type: "input", data }));
@@ -200,7 +203,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
     }, []);
 
     // -----------------------------------------------------------------------
-    // connectSocket — strictly single-flight connection with sequence guard
+    // connectSocket — single-flight connection with signed token authentication
     // -----------------------------------------------------------------------
     const connectSocket = useCallback(
       async (restartShell = false) => {
@@ -216,7 +219,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
           connectionTimeoutRef.current = null;
         }
 
-        // Close previous socket synchronously so it never lingers
+        // Close previous socket synchronously
         if (socketRef.current) {
           const prev = socketRef.current;
           socketRef.current = null;
@@ -240,82 +243,132 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
         const fitAddon = fitAddonRef.current;
         if (!term) return;
 
-        // Request a secure terminal ticket
-        let ticket = "";
-        if (projectId) {
+        // 1. Fetch authenticated terminal token from DevForge server
+        let sessionData: {
+          token?: string;
+          wsUrl?: string | null;
+          projectSlug?: string;
+          files?: Array<{ path: string; type: string; content?: string }>;
+          error?: string;
+        } | null = null;
+
+        if (projectId || projectSlug) {
           try {
-            const res = await getTerminalTicketAction(projectId);
+            const res = await fetch("/api/terminal/session", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ projectId, projectSlug }),
+            });
+
             if (seq !== connectionSeqRef.current) return;
-            if (res.success && res.ticketId) ticket = res.ticketId;
-          } catch (e) {
-            console.warn("[Terminal] Failed to fetch terminal ticket:", e);
+
+            if (res.ok) {
+              sessionData = await res.json();
+            } else {
+              const errJson = await res.json().catch(() => ({}));
+              throw new Error(errJson.error || `Authentication failed (${res.status})`);
+            }
+          } catch (e: any) {
+            if (seq !== connectionSeqRef.current) return;
+            console.error("[Terminal] Failed to fetch terminal session:", e);
+            updateStatus("error");
+            const err = e?.message || "Failed to initialize terminal session.";
+            setErrorMessage(err);
+            term.write(`\r\n\x1b[31m[Authentication Error: ${err}]\x1b[0m\r\n`);
+            return;
           }
         }
 
         if (seq !== connectionSeqRef.current) return;
 
-        // Determine WebSocket URL safely
+        // 2. Determine WebSocket URL safely
         const isHttps = typeof window !== "undefined" && window.location.protocol === "https:";
         const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
         const isLocalhost = host === "localhost" || host === "127.0.0.1";
 
-        let resolvedWsUrl: string | null = wsUrl || process.env.NEXT_PUBLIC_TERMINAL_WS_URL || null;
+        let resolvedWsUrl: string | null =
+          wsUrl || sessionData?.wsUrl || process.env.NEXT_PUBLIC_TERMINAL_WS_URL || null;
 
         if (!resolvedWsUrl) {
           if (isLocalhost) {
-            resolvedWsUrl = `ws://${host}:3001`;
+            resolvedWsUrl = `ws://${host}:3001/terminal`;
           } else {
-            // In cloud/serverless deployments without an external terminal server,
-            // avoid attempting ws://${host}:3001 which causes Mixed Content security blocks over HTTPS.
             resolvedWsUrl = null;
           }
-        } else if (isHttps && resolvedWsUrl.startsWith("ws://")) {
-          // Upgrade to secure WebSocket protocol if on HTTPS to prevent Mixed Content
-          resolvedWsUrl = resolvedWsUrl.replace(/^ws:\/\//, "wss://");
+        } else {
+          // Normalize protocol: if HTTPS, upgrade ws:// to wss://
+          if (isHttps && resolvedWsUrl.startsWith("ws://")) {
+            resolvedWsUrl = resolvedWsUrl.replace(/^ws:\/\//, "wss://");
+          }
         }
 
-        // If no viable WebSocket endpoint exists (serverless cloud deployment)
+        // If no viable WebSocket endpoint exists in production
         if (!resolvedWsUrl) {
-          updateStatus("disconnected");
-          setErrorMessage("Serverless Mode: Cloud shell runs code via the Run button and Output tab.");
+          updateStatus("error");
+          const msg =
+            "Terminal Server Not Configured: Set NEXT_PUBLIC_TERMINAL_WS_URL in Vercel to your deployed external terminal server (e.g. wss://devforge-terminal.onrender.com/terminal).";
+          setErrorMessage(msg);
 
           term.clear();
-          term.write("\r\n\x1b[1;38;5;45m╭──────────────────────────────────────────────────────────────────────────╮\x1b[0m\r\n");
-          term.write("\x1b[1;38;5;45m│\x1b[0m  \x1b[1;37mDevForge Cloud Shell\x1b[0m \x1b[90m[Serverless Runtime]\x1b[0m                               \x1b[1;38;5;45m│\x1b[0m\r\n");
-          term.write("\x1b[1;38;5;45m╰──────────────────────────────────────────────────────────────────────────╯\x1b[0m\r\n\r\n");
-          term.write("\x1b[38;5;220m⚡ Serverless Environment Active\x1b[0m\r\n");
-          term.write("  • Click the \x1b[1;32mRun\x1b[0m button in the top toolbar to execute your code.\r\n");
-          term.write("  • Switch to the \x1b[1;36mOutput\x1b[0m tab to view real-time console execution logs.\r\n");
-          term.write("  • Switch to \x1b[1;35mLive Preview\x1b[0m (top right) to inspect web interfaces.\r\n\r\n");
-          term.write("\x1b[90m────────────────────────────────────────────────────────────────────────────\x1b[0m\r\n");
-          term.write("\x1b[90mTip: To connect an interactive bash/zsh shell in production,\x1b[0m\r\n");
-          term.write("\x1b[90mdeploy DevForge terminal-server and configure environment variable:\x1b[0m\r\n");
-          term.write("\x1b[38;5;75mNEXT_PUBLIC_TERMINAL_WS_URL=wss://your-terminal-server.com\x1b[0m\r\n\r\n");
+          term.write(
+            "\r\n\x1b[1;38;5;203m╭──────────────────────────────────────────────────────────────────────────╮\x1b[0m\r\n"
+          );
+          term.write(
+            "\x1b[1;38;5;203m│\x1b[0m  \x1b[1;37mDevForge Real Interactive Terminal\x1b[0m \x1b[90m[External Server Required]\x1b[0m       \x1b[1;38;5;203m│\x1b[0m\r\n"
+          );
+          term.write(
+            "\x1b[1;38;5;203m╰──────────────────────────────────────────────────────────────────────────╯\x1b[0m\r\n\r\n"
+          );
+          term.write("\x1b[38;5;214m⚠ External Terminal Server URL is not configured.\x1b[0m\r\n\r\n");
+          term.write(
+            "  The DevForge Cloud IDE requires a standalone external terminal server\r\n"
+          );
+          term.write("  for persistent WebSocket connections and real PTY Linux shells.\r\n\r\n");
+          term.write("  \x1b[1;36mDeployment Instructions:\x1b[0m\r\n");
+          term.write("  1. Deploy the \x1b[1;33mterminal-server\x1b[0m directory to Render, Railway, or Fly.io.\r\n");
+          term.write("  2. In your DevForge Vercel project, add environment variables:\r\n");
+          term.write("     \x1b[1;32mNEXT_PUBLIC_TERMINAL_WS_URL=wss://your-terminal-server/terminal\x1b[0m\r\n");
+          term.write("     \x1b[1;32mTERMINAL_AUTH_SECRET=your-shared-secret\x1b[0m\r\n\r\n");
+          term.write("  \x1b[90mFor local development: start the server with 'npm run terminal:server'\x1b[0m\r\n\r\n");
           return;
         }
 
-        const params = new URLSearchParams();
-        if (term.cols) params.set("cols", String(term.cols));
-        if (term.rows) params.set("rows", String(term.rows));
-        if (ticket) params.set("ticket", ticket);
-        if (projectId) params.set("projectId", projectId);
-        if (projectSlug) params.set("projectSlug", projectSlug);
-        if (cwd) params.set("cwd", cwd);
+        // Construct WebSocket connection URL with signed token
+        let wsEndpoint: string;
+        try {
+          const targetUrl = new URL(
+            resolvedWsUrl,
+            typeof window !== "undefined" ? window.location.origin : "http://localhost:3000"
+          );
+          if (sessionData?.token) {
+            targetUrl.searchParams.set("token", sessionData.token);
+          }
+          if (term.cols) targetUrl.searchParams.set("cols", String(term.cols));
+          if (term.rows) targetUrl.searchParams.set("rows", String(term.rows));
+          if (projectId) targetUrl.searchParams.set("projectId", projectId);
+          if (projectSlug) targetUrl.searchParams.set("projectSlug", projectSlug);
+          if (cwd) targetUrl.searchParams.set("cwd", cwd);
+          wsEndpoint = targetUrl.toString();
+        } catch {
+          wsEndpoint = resolvedWsUrl;
+        }
 
         try {
-          const ws = new WebSocket(`${resolvedWsUrl}?${params.toString()}`);
+          const ws = new WebSocket(wsEndpoint);
           socketRef.current = ws;
 
-          // Guard against hanging connections: timeout after 8 seconds
+          // Timeout if connection hangs longer than 10 seconds
           connectionTimeoutRef.current = setTimeout(() => {
             if (ws.readyState !== WebSocket.OPEN && seq === connectionSeqRef.current) {
               try {
                 ws.close();
               } catch {}
               updateStatus("error");
-              setErrorMessage("Connection to terminal server timed out. Please verify the terminal service.");
+              setErrorMessage(
+                "Connection to external terminal server timed out. Please verify the terminal service is running and reachable."
+              );
             }
-          }, 8000);
+          }, 10000);
 
           ws.onopen = () => {
             if (seq !== connectionSeqRef.current) {
@@ -337,20 +390,27 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
               ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
             } catch {}
 
+            // Synchronize initial project files into the terminal server disk if provided
+            if (sessionData?.files && sessionData.files.length > 0) {
+              try {
+                ws.send(JSON.stringify({ type: "sync_files", files: sessionData.files }));
+              } catch {}
+            }
+
             if (restartShell) {
-              ws.send(JSON.stringify({ type: "restart", cols: term.cols, rows: term.rows }));
+              ws.send(JSON.stringify({ type: "signal", signal: "SIGTERM" }));
             }
 
             term.focus();
 
-            // Heartbeat ping every 20 seconds to prevent idle drops
+            // Heartbeat ping every 25 seconds
             pingIntervalRef.current = setInterval(() => {
               if (ws.readyState === WebSocket.OPEN) {
                 try {
                   ws.send(JSON.stringify({ type: "ping" }));
                 } catch {}
               }
-            }, 20000);
+            }, 25000);
           };
 
           ws.onmessage = (event) => {
@@ -358,6 +418,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
 
             try {
               const msg = JSON.parse(event.data);
+
               if (msg.type === "output" && typeof msg.data === "string") {
                 term.write(msg.data);
                 outputBufferRef.current += msg.data;
@@ -367,21 +428,26 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
                   );
                 }
                 scanForDevServers(msg.data);
+              } else if (msg.type === "ready" || (msg.type === "status" && msg.status === "connected")) {
+                updateStatus("connected");
+                setErrorMessage(null);
               } else if (msg.type === "fs_change") {
-                // Debounce filesystem change notifications by 200ms
+                // Debounce disk change notification by 200ms
                 if (fsChangeDebounceRef.current) clearTimeout(fsChangeDebounceRef.current);
                 fsChangeDebounceRef.current = setTimeout(() => {
                   onFilesChangedRef.current?.();
                   fsChangeDebounceRef.current = null;
                 }, 200);
               } else if (msg.type === "exit") {
-                term.write(`\r\n\x1b[33m[Process exited with code ${msg.exitCode}]\x1b[0m\r\n`);
+                const code = msg.code ?? msg.exitCode ?? 0;
+                term.write(`\r\n\x1b[33m[Process exited with code ${code}]\x1b[0m\r\n`);
                 updateStatus("disconnected");
               } else if (msg.type === "error") {
                 term.write(`\r\n\x1b[31m[Error: ${msg.message}]\x1b[0m\r\n`);
                 setErrorMessage(msg.message);
+                updateStatus("error");
               } else if (msg.type === "pong") {
-                // Ping-pong alive
+                // Heartbeat response
               }
             } catch {
               term.write(event.data);
@@ -395,10 +461,12 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
               connectionTimeoutRef.current = null;
             }
             updateStatus("error");
-            setErrorMessage("Terminal connection failed. Please verify the terminal server is active.");
+            setErrorMessage(
+              "Terminal server connection failed. Please ensure the external terminal server is deployed and accessible over WSS."
+            );
           };
 
-          ws.onclose = () => {
+          ws.onclose = (ev) => {
             if (seq !== connectionSeqRef.current) return;
             if (connectionTimeoutRef.current) {
               clearTimeout(connectionTimeoutRef.current);
@@ -409,14 +477,17 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
               pingIntervalRef.current = null;
             }
             updateStatus("disconnected");
+            if (ev.reason) {
+              setErrorMessage(`Disconnected: ${ev.reason}`);
+            }
           };
         } catch (err: any) {
           if (seq !== connectionSeqRef.current) return;
           updateStatus("error");
-          setErrorMessage(err?.message || "Failed to establish terminal connection.");
+          setErrorMessage(err?.message || "Failed to establish terminal WebSocket connection.");
         }
       },
-      [projectId, projectSlug, cwd, wsUrl, updateStatus, initTerminal]
+      [projectId, projectSlug, cwd, wsUrl, updateStatus, initTerminal, scanForDevServers]
     );
 
     // Lifecycle: connect on mount, clean up synchronously on unmount
@@ -518,6 +589,19 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
         focus: () => {
           terminalRef.current?.focus();
         },
+        sendInput: (data: string) => {
+          if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({ type: "input", data }));
+          }
+        },
+        syncFile: (filePath: string, content: string) => {
+          if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(
+              JSON.stringify({ type: "file_write", path: filePath, content })
+            );
+          }
+        },
+        isConnected: () => socketRef.current?.readyState === WebSocket.OPEN,
       }),
       [connectSocket]
     );
@@ -534,7 +618,7 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
           <div className="absolute inset-0 flex items-center justify-center bg-[#080b11]/80 backdrop-blur-xs z-10">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="size-4 animate-spin text-primary" />
-              <span>Connecting to project workspace shell...</span>
+              <span>Connecting to external terminal shell...</span>
             </div>
           </div>
         )}
@@ -544,10 +628,10 @@ export const XTermTerminal = forwardRef<XTermTerminalHandle, XTermTerminalProps>
             <div className="flex flex-col items-center gap-2 text-center p-4 max-w-sm rounded-lg border border-border bg-card/40">
               <AlertCircle className="size-5 text-destructive" />
               <p className="text-xs font-medium text-foreground">
-                {errorMessage || "Terminal session disconnected"}
+                {errorMessage || "Terminal session unavailable"}
               </p>
               <p className="text-[11px] text-muted-foreground">
-                Please verify that the terminal service is reachable or check NEXT_PUBLIC_TERMINAL_WS_URL.
+                Please verify that the external terminal service is running or check NEXT_PUBLIC_TERMINAL_WS_URL.
               </p>
               <Button
                 type="button"

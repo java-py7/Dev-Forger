@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "terminal": "tsx src/server/terminal-server.ts",
+    "terminal:server": "npm --prefix terminal-server run dev",
+    "terminal:build": "npm --prefix terminal-server run build",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

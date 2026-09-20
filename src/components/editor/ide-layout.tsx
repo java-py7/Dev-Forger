@@ -33,7 +33,7 @@ import {
 import { CodeEditor } from "./code-editor";
 import { FileExplorer } from "./file-explorer";
 import { EditorTabs } from "./editor-tabs";
-import { TerminalPanel, LogEntry } from "../terminal/terminal-panel";
+import { TerminalPanel, LogEntry, TerminalPanelHandle } from "../terminal/terminal-panel";
 import { LivePreview } from "./live-preview";
 import { WorkspaceFileItem, OpenTab, detectLanguage } from "./types";
 import {
@@ -138,6 +138,7 @@ export function IdeLayout({
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const terminalPanelRef = useRef<TerminalPanelHandle>(null);
 
   // Populate initial connection log on mount (avoids SSR hydration mismatch #418)
   useEffect(() => {
@@ -459,6 +460,11 @@ export function IdeLayout({
           t.fileId === activeFileId ? { ...t, isDirty: false } : t
         )
       );
+
+      // Immediately sync saved file to the real external terminal server disk
+      if (activeFile) {
+        terminalPanelRef.current?.syncFile(activeFile.path, contentToSave);
+      }
     } else {
       setSaveStatus("unsaved");
       setLogs((prev) => [
@@ -473,8 +479,8 @@ export function IdeLayout({
     }
   };
 
-  // Run Code logic (Safe client evaluator for JS/TS, plus syntax check)
-  const handleRunCode = () => {
+  // Run Code logic: Executes through the REAL terminal / PTY session
+  const handleRunCode = async () => {
     if (!activeFile) return;
 
     const time = new Date().toLocaleTimeString();
@@ -496,125 +502,45 @@ export function IdeLayout({
       return;
     }
 
+    // Auto-save active file if modified before running so the disk has the latest code
+    if (activeFileId && fileBuffers[activeFileId] !== undefined) {
+      await handleSave();
+    }
+
     setTerminalOpen(true);
     setIsRunning(true);
+    terminalPanelRef.current?.openTerminal();
+
+    // Determine execution command based on file type and project
+    const fileName = activeFile.name;
+    let runCmd = `node "${fileName}"\n`;
+
+    if (lang === "python" || fileName.endsWith(".py")) {
+      runCmd = `python3 "${fileName}" || python "${fileName}"\n`;
+    } else if (lang === "typescript" || fileName.endsWith(".ts")) {
+      runCmd = `node "${fileName}"\n`;
+    } else if (lang === "bash" || lang === "shell" || fileName.endsWith(".sh")) {
+      runCmd = `bash "${fileName}"\n`;
+    } else if (lang === "rust" || fileName.endsWith(".rs")) {
+      runCmd = `cargo run\n`;
+    } else if (lang === "go" || fileName.endsWith(".go")) {
+      runCmd = `go run "${fileName}"\n`;
+    } else if (fileName === "package.json") {
+      runCmd = `npm test\n`;
+    }
 
     setLogs((prev) => [
       ...prev,
       {
         type: "info",
-        text: `--- Executing ${activeFile.name} (${lang}) ---`,
+        text: `[Terminal] Executing command: ${runCmd.trim()}`,
         timestamp: time,
       },
     ]);
 
-    const code = currentContent;
-
-    // JavaScript / TypeScript browser-safe runner
-    if (lang === "javascript" || lang === "typescript" || lang === "json") {
-      try {
-        const capturedLogs: string[] = [];
-        const originalLog = console.log;
-        const originalWarn = console.warn;
-        const originalError = console.error;
-
-        console.log = (...args) => {
-          capturedLogs.push(
-            args
-              .map((a) => (typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)))
-              .join(" ")
-          );
-        };
-        console.warn = (...args) => {
-          capturedLogs.push(
-            "[warn] " +
-              args
-                .map((a) => (typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)))
-                .join(" ")
-          );
-        };
-        console.error = (...args) => {
-          capturedLogs.push(
-            "[error] " +
-              args
-                .map((a) => (typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)))
-                .join(" ")
-          );
-        };
-
-        let result: any;
-        try {
-          if (lang === "json") {
-            result = JSON.parse(code);
-            capturedLogs.push("JSON Valid: true\n" + JSON.stringify(result, null, 2));
-          } else {
-            // Strip typescript type annotations roughly or evaluate direct JS
-            const cleanJs = code.replace(/:\s*[A-Za-z0-9_<>\[\]]+/g, "");
-            result = new Function(cleanJs)();
-          }
-        } finally {
-          console.log = originalLog;
-          console.warn = originalWarn;
-          console.error = originalError;
-        }
-
-        const now = new Date().toLocaleTimeString();
-        if (capturedLogs.length > 0) {
-          setLogs((prev) => [
-            ...prev,
-            ...capturedLogs.map((text) => ({
-              type: "info" as const,
-              text,
-              timestamp: now,
-            })),
-          ]);
-        }
-
-        if (result !== undefined) {
-          setLogs((prev) => [
-            ...prev,
-            {
-              type: "success",
-              text: `Result: ${typeof result === "object" ? JSON.stringify(result, null, 2) : result}`,
-              timestamp: now,
-            },
-          ]);
-        }
-
-        setLogs((prev) => [
-          ...prev,
-          {
-            type: "success",
-            text: `Process finished successfully (exit code 0).`,
-            timestamp: new Date().toLocaleTimeString(),
-          },
-        ]);
-      } catch (err: any) {
-        setLogs((prev) => [
-          ...prev,
-          {
-            type: "error",
-            text: `Runtime Exception: ${err?.message || err}`,
-            timestamp: new Date().toLocaleTimeString(),
-          },
-        ]);
-      }
-    } else {
-      // General language simulation
-      setLogs((prev) => [
-        ...prev,
-        {
-          type: "info",
-          text: `[${lang.toUpperCase()}] Source code parsed. Remote container runner queued for ${activeFile.name}.`,
-          timestamp: new Date().toLocaleTimeString(),
-        },
-        {
-          type: "success",
-          text: `Code syntax verified. Ready for deployment.`,
-          timestamp: new Date().toLocaleTimeString(),
-        },
-      ]);
-    }
+    // Send real command to active PTY shell
+    terminalPanelRef.current?.sendInput(runCmd);
+    terminalPanelRef.current?.focus();
 
     setIsRunning(false);
   };
@@ -879,6 +805,7 @@ export function IdeLayout({
 
             {/* Bottom Terminal / Output Panel */}
             <TerminalPanel
+              ref={terminalPanelRef}
               isOpen={terminalOpen}
               onToggle={() => setTerminalOpen(!terminalOpen)}
               logs={logs}

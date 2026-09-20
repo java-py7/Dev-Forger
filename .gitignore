@@ -42,3 +42,9 @@ next-env.d.ts
 
 /src/generated/prisma
 /workspaces
+
+# Terminal server
+/terminal-server/node_modules/
+/terminal-server/dist/
+/terminal-server/workspaces/
+/terminal-server/.env
