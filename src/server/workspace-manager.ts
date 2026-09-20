@@ -1,16 +1,29 @@
 import fs from "fs";
 import path from "path";
+import os from "os";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { WorkspaceFileItem, detectLanguage } from "@/components/editor/types";
 
-export const WORKSPACES_ROOT = path.resolve(process.cwd(), "workspaces");
+// In serverless environments (Vercel, AWS Lambda, Netlify), process.cwd() (/var/task) is read-only.
+// os.tmpdir() (/tmp) provides a writable scratch directory.
+const isServerless = Boolean(
+  process.env.VERCEL ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.NETLIFY
+);
 
-// Ensure base root directory exists
+export const WORKSPACES_ROOT = isServerless
+  ? path.resolve(os.tmpdir(), "devforge-workspaces")
+  : path.resolve(process.cwd(), "workspaces");
+
+// Ensure base root directory exists safely
 if (!fs.existsSync(WORKSPACES_ROOT)) {
   try {
     fs.mkdirSync(WORKSPACES_ROOT, { recursive: true });
-  } catch {}
+  } catch (err) {
+    console.warn("[WorkspaceManager] Failed to create WORKSPACES_ROOT:", err);
+  }
 }
 
 export function sanitizeProjectSlug(slug: string): string {
@@ -54,34 +67,47 @@ export async function getProjectWorkspaceDirById(
 export async function ensureWorkspaceDiskSync(projectId: string): Promise<string> {
   const { dir, workspaceId } = await getProjectWorkspaceDirById(projectId);
 
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
 
-  // Check if directory already has files
-  const existingDiskItems = fs.readdirSync(dir);
+    // Check if directory already has files
+    let existingDiskItems: string[] = [];
+    try {
+      existingDiskItems = fs.readdirSync(dir);
+    } catch {
+      existingDiskItems = [];
+    }
 
-  if (existingDiskItems.length === 0 && workspaceId) {
-    // Disk is empty: Seed from database files if any
-    const dbFiles = await prisma.workspaceFile.findMany({
-      where: { workspaceId },
-      orderBy: { path: "asc" },
-    });
+    if (existingDiskItems.length === 0 && workspaceId) {
+      // Disk is empty: Seed from database files if any
+      const dbFiles = await prisma.workspaceFile.findMany({
+        where: { workspaceId },
+        orderBy: { path: "asc" },
+      });
 
-    for (const f of dbFiles) {
-      const targetPath = path.join(dir, f.path);
-      if (f.type === "FOLDER") {
-        if (!fs.existsSync(targetPath)) {
-          fs.mkdirSync(targetPath, { recursive: true });
+      for (const f of dbFiles) {
+        try {
+          const targetPath = path.join(dir, f.path);
+          if (f.type === "FOLDER") {
+            if (!fs.existsSync(targetPath)) {
+              fs.mkdirSync(targetPath, { recursive: true });
+            }
+          } else {
+            const parentDir = path.dirname(targetPath);
+            if (!fs.existsSync(parentDir)) {
+              fs.mkdirSync(parentDir, { recursive: true });
+            }
+            fs.writeFileSync(targetPath, f.content || "", "utf8");
+          }
+        } catch (fileErr) {
+          console.warn(`[WorkspaceManager] Failed writing file ${f.path} to disk:`, fileErr);
         }
-      } else {
-        const parentDir = path.dirname(targetPath);
-        if (!fs.existsSync(parentDir)) {
-          fs.mkdirSync(parentDir, { recursive: true });
-        }
-        fs.writeFileSync(targetPath, f.content || "", "utf8");
       }
     }
+  } catch (err) {
+    console.warn("[WorkspaceManager] ensureWorkspaceDiskSync disk error:", err);
   }
 
   return dir;
@@ -94,8 +120,12 @@ export async function ensureWorkspaceDiskSync(projectId: string): Promise<string
 export async function scanWorkspaceDisk(projectId: string): Promise<WorkspaceFileItem[]> {
   const { dir, workspaceId } = await getProjectWorkspaceDirById(projectId);
 
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  } catch (err) {
+    console.warn("[WorkspaceManager] scanWorkspaceDisk mkdir warning:", err);
   }
 
   // Load existing DB files for ID continuity
@@ -216,6 +246,12 @@ async function syncDbWithDiskAsync(
   diskItems: WorkspaceFileItem[],
   existingDbFiles: any[]
 ) {
+  // CRITICAL: NEVER delete DB records if disk is empty or disk scanning found 0 items!
+  // In serverless / ephemeral containers, disk might be fresh or read-only while DB has the real files.
+  if (diskItems.length === 0) {
+    return;
+  }
+
   const existingPathMap = new Map<string, any>();
   for (const f of existingDbFiles) {
     existingPathMap.set(f.path.replace(/\\/g, "/"), f);
@@ -255,7 +291,7 @@ async function syncDbWithDiskAsync(
     }
   }
 
-  // Delete DB records for files that were deleted on disk
+  // Delete DB records for files that were deleted on disk (only when disk has files)
   for (const f of existingDbFiles) {
     const norm = f.path.replace(/\\/g, "/");
     if (!diskPathSet.has(norm)) {
@@ -282,7 +318,7 @@ export async function createWorkspaceFileOnDisk({
   type: "FILE" | "FOLDER";
   content?: string;
 }) {
-  const { dir, workspaceId } = await getProjectWorkspaceDirById(projectId);
+  const { dir } = await getProjectWorkspaceDirById(projectId);
   const normalizedPath = filePath.replace(/\\/g, "/");
   const fullPath = path.resolve(dir, normalizedPath);
 
@@ -290,16 +326,20 @@ export async function createWorkspaceFileOnDisk({
     throw new Error("Access denied: Path traversal detected");
   }
 
-  if (type === "FOLDER") {
-    if (!fs.existsSync(fullPath)) {
-      fs.mkdirSync(fullPath, { recursive: true });
+  try {
+    if (type === "FOLDER") {
+      if (!fs.existsSync(fullPath)) {
+        fs.mkdirSync(fullPath, { recursive: true });
+      }
+    } else {
+      const parentDir = path.dirname(fullPath);
+      if (!fs.existsSync(parentDir)) {
+        fs.mkdirSync(parentDir, { recursive: true });
+      }
+      fs.writeFileSync(fullPath, content, "utf8");
     }
-  } else {
-    const parentDir = path.dirname(fullPath);
-    if (!fs.existsSync(parentDir)) {
-      fs.mkdirSync(parentDir, { recursive: true });
-    }
-    fs.writeFileSync(fullPath, content, "utf8");
+  } catch (err) {
+    console.warn("[WorkspaceManager] createWorkspaceFileOnDisk disk warning:", err);
   }
 
   return scanWorkspaceDisk(projectId);
@@ -323,13 +363,17 @@ export async function deleteWorkspaceFileOnDisk({
     throw new Error("Access denied: Path traversal detected");
   }
 
-  if (fs.existsSync(fullPath)) {
-    const stat = fs.statSync(fullPath);
-    if (stat.isDirectory()) {
-      fs.rmSync(fullPath, { recursive: true, force: true });
-    } else {
-      fs.unlinkSync(fullPath);
+  try {
+    if (fs.existsSync(fullPath)) {
+      const stat = fs.statSync(fullPath);
+      if (stat.isDirectory()) {
+        fs.rmSync(fullPath, { recursive: true, force: true });
+      } else {
+        fs.unlinkSync(fullPath);
+      }
     }
+  } catch (err) {
+    console.warn("[WorkspaceManager] deleteWorkspaceFileOnDisk disk warning:", err);
   }
 
   return scanWorkspaceDisk(projectId);
@@ -355,12 +399,16 @@ export async function renameWorkspaceFileOnDisk({
     throw new Error("Access denied: Path traversal detected");
   }
 
-  if (fs.existsSync(fullOld)) {
-    const newParent = path.dirname(fullNew);
-    if (!fs.existsSync(newParent)) {
-      fs.mkdirSync(newParent, { recursive: true });
+  try {
+    if (fs.existsSync(fullOld)) {
+      const newParent = path.dirname(fullNew);
+      if (!fs.existsSync(newParent)) {
+        fs.mkdirSync(newParent, { recursive: true });
+      }
+      fs.renameSync(fullOld, fullNew);
     }
-    fs.renameSync(fullOld, fullNew);
+  } catch (err) {
+    console.warn("[WorkspaceManager] renameWorkspaceFileOnDisk disk warning:", err);
   }
 
   return scanWorkspaceDisk(projectId);
@@ -385,12 +433,16 @@ export async function saveWorkspaceFileContentOnDisk({
     throw new Error("Access denied: Path traversal detected");
   }
 
-  const parentDir = path.dirname(fullPath);
-  if (!fs.existsSync(parentDir)) {
-    fs.mkdirSync(parentDir, { recursive: true });
-  }
+  try {
+    const parentDir = path.dirname(fullPath);
+    if (!fs.existsSync(parentDir)) {
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
 
-  fs.writeFileSync(fullPath, content, "utf8");
+    fs.writeFileSync(fullPath, content, "utf8");
+  } catch (err) {
+    console.warn("[WorkspaceManager] saveWorkspaceFileContentOnDisk disk warning:", err);
+  }
 }
 
 // ---------------------------------------------------------------------------

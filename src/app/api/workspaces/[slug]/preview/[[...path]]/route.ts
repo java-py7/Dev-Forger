@@ -267,8 +267,41 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     }
   }
 
-  // If still not found
+  // If still not found on disk, check database fallback
   if (!fs.existsSync(finalPath) || fs.statSync(finalPath).isDirectory()) {
+    try {
+      const dbFile = await prisma.workspaceFile.findFirst({
+        where: {
+          workspace: { projectId: project.id },
+          path: relativeFilePath,
+        },
+      });
+
+      if (dbFile && dbFile.content !== null) {
+        let content = dbFile.content;
+        const fileExt = path.extname(relativeFilePath).toLowerCase();
+        const contentType = MIME_TYPES[fileExt] || "text/plain; charset=utf-8";
+
+        if (fileExt === ".html" || fileExt === ".htm") {
+          if (content.includes("</body>")) {
+            content = content.replace("</body>", `${INJECTED_BRIDGE_SCRIPT}\n</body>`);
+          } else if (content.includes("</html>")) {
+            content = content.replace("</html>", `${INJECTED_BRIDGE_SCRIPT}\n</html>`);
+          } else {
+            content = `${content}\n${INJECTED_BRIDGE_SCRIPT}`;
+          }
+        }
+
+        return new Response(content, {
+          status: 200,
+          headers: {
+            "Content-Type": contentType,
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+          },
+        });
+      }
+    } catch {}
+
     // If requesting HTML or root, serve friendly placeholder
     const ext = path.extname(relativeFilePath).toLowerCase();
     if (!ext || ext === ".html" || ext === ".htm") {

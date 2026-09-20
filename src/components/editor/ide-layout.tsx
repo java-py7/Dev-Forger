@@ -137,13 +137,18 @@ export function IdeLayout({
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
-  const [logs, setLogs] = useState<LogEntry[]>([
-    {
-      type: "info",
-      text: `Connected to DevForge workspace: ${project.name}`,
-      timestamp: new Date().toLocaleTimeString(),
-    },
-  ]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+
+  // Populate initial connection log on mount (avoids SSR hydration mismatch #418)
+  useEffect(() => {
+    setLogs([
+      {
+        type: "info",
+        text: `Connected to DevForge workspace: ${project.name}`,
+        timestamp: new Date().toLocaleTimeString(),
+      },
+    ]);
+  }, [project.name]);
 
   // Live Preview states
   const [previewOpen, setPreviewOpen] = useState(false);

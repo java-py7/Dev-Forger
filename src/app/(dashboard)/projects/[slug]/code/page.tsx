@@ -81,8 +81,10 @@ export default async function ProjectIdePage({ params }: Props) {
         files: true,
       },
     });
+  }
 
-    // Seed starter files into the database
+  // If workspace exists but has no files yet, seed starter files into the database
+  if (!workspace.files || workspace.files.length === 0) {
     const lang = project.language?.toLowerCase() || "typescript";
     let mainFileName = "index.ts";
     let mainFileLang = "typescript";
@@ -160,12 +162,34 @@ Edit \`${mainFileName}\` and click **Run** to execute your code in the DevForge 
     workspace.files = [mainFile, readmeFile];
   }
 
-  // Ensure workspace files are synchronized on physical disk and load disk file tree
-  const { ensureWorkspaceDiskSync, scanWorkspaceDisk } = await import(
-    "@/server/workspace-manager"
-  );
-  await ensureWorkspaceDiskSync(project.id);
-  const initialFiles: WorkspaceFileItem[] = await scanWorkspaceDisk(project.id);
+  // Load initial files from database first as reliable baseline
+  let initialFiles: WorkspaceFileItem[] = (workspace.files || []).map((f) => ({
+    id: f.id,
+    name: f.name,
+    path: f.path.replace(/\\/g, "/"),
+    type: f.type as "FILE" | "FOLDER",
+    parentId: f.parentId || null,
+    content: f.content,
+    language: f.language,
+    size: f.size,
+  }));
+
+  // Synchronize with physical workspace disk if available (e.g. local dev or writable /tmp in serverless)
+  try {
+    const { ensureWorkspaceDiskSync, scanWorkspaceDisk } = await import(
+      "@/server/workspace-manager"
+    );
+    await ensureWorkspaceDiskSync(project.id);
+    const scanned = await scanWorkspaceDisk(project.id);
+    if (scanned && scanned.length > 0) {
+      initialFiles = scanned;
+    }
+  } catch (err) {
+    console.warn(
+      "[ProjectIdePage] Disk sync bypassed or running in serverless environment:",
+      err
+    );
+  }
 
   return (
     <IdeLayout
