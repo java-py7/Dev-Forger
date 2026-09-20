@@ -4,7 +4,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { NotificationFilter, ActionResult, NotificationItemData } from "@/components/notifications/types";
-import { NotificationType } from "@prisma/client";
+import type { NotificationType } from "@/types/database";
 
 export async function getNotifications(params?: {
   filter?: NotificationFilter;

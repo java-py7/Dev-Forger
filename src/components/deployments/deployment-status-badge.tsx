@@ -1,5 +1,5 @@
 import { Badge } from "@/components/ui/badge";
-import { DeploymentStatus } from "@prisma/client";
+import type { DeploymentStatus } from "@/types/database";
 import {
   CheckCircle2,
   XCircle,

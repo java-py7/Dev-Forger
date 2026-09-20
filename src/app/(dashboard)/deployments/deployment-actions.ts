@@ -3,7 +3,7 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
-import { DeploymentStatus, BuildStatus } from "@prisma/client";
+import type { DeploymentStatus, BuildStatus } from "@/types/database";
 
 // ============================================================
 // TYPES

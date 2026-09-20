@@ -4,7 +4,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
-import { ProfileVisibility } from "@prisma/client";
+import type { ProfileVisibility } from "@/types/database";
 
 export type SettingsActionResult = {
   success: boolean;

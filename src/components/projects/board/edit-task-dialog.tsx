@@ -31,8 +31,8 @@ import {
   updateTaskAction,
   deleteTaskAction,
 } from "@/app/(dashboard)/projects/[slug]/task-actions";
-import { TaskPriority, TaskType } from "@prisma/client";
-import { Calendar, Clock, Loader2, Trash2, User } from "lucide-react";
+import { TaskPriority, TaskType } from "@/types/database";
+import { Clock, Loader2, Trash2 } from "lucide-react";
 
 type EditTaskDialogProps = {
   open: boolean;
@@ -232,10 +232,10 @@ export function EditTaskDialog({
                   disabled={!canEdit || loading}
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <option value={TaskPriority.LOW}>Low</option>
-                  <option value={TaskPriority.MEDIUM}>Medium</option>
-                  <option value={TaskPriority.HIGH}>High</option>
-                  <option value={TaskPriority.URGENT}>Urgent</option>
+                  <option value="LOW">Low</option>
+                  <option value="MEDIUM">Medium</option>
+                  <option value="HIGH">High</option>
+                  <option value="URGENT">Urgent</option>
                 </select>
               </div>
             </div>
@@ -251,10 +251,10 @@ export function EditTaskDialog({
                   disabled={!canEdit || loading}
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <option value={TaskType.TASK}>Task</option>
-                  <option value={TaskType.BUG}>Bug</option>
-                  <option value={TaskType.FEATURE}>Feature</option>
-                  <option value={TaskType.IMPROVEMENT}>Improvement</option>
+                  <option value="TASK">Task</option>
+                  <option value="BUG">Bug</option>
+                  <option value="FEATURE">Feature</option>
+                  <option value="IMPROVEMENT">Improvement</option>
                 </select>
               </div>
 

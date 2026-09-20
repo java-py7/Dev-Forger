@@ -3,7 +3,7 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
-import { TaskPriority, TaskType } from "@prisma/client";
+import { TaskPriority, TaskType } from "@/types/database";
 
 export type BoardTask = {
   id: string;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { ProfileVisibility } from "@prisma/client";
+import type { ProfileVisibility } from "@/types/database";
 import { updatePrivacyAction } from "@/app/(dashboard)/settings/actions";
 import { Button } from "@/components/ui/button";
 import { AlertCircle, Check, Globe, Lock, Loader2, Users } from "lucide-react";
