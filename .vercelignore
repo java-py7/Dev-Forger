@@ -1,0 +1,3 @@
+# Standalone external terminal server (deployed separately to Render / Railway / Fly.io)
+terminal-server
+workspaces
